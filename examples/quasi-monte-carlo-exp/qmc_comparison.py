@@ -4,7 +4,7 @@ from samplers.implementations import UnitCubeSampler, SobolSampler
 from main import run_sampling_experiment
 import matplotlib.pyplot as plt
 
-def average_coordinate(x: np.ndarray) -> float:
+def l1_norm(x: np.ndarray) -> float:
     return np.sum(x)
 
 def run_comparison(n_dimensions: int, n_samples: int):
@@ -15,7 +15,7 @@ def run_comparison(n_dimensions: int, n_samples: int):
     mc_sampler = UnitCubeSampler()
     mc_results = run_sampling_experiment(
         distribution=dist,
-        target_function=average_coordinate,
+        target_function=l1_norm,
         sampler=mc_sampler,
         n_samples=n_samples,
         n_dimensions=n_dimensions
@@ -25,16 +25,17 @@ def run_comparison(n_dimensions: int, n_samples: int):
     qmc_sampler = SobolSampler(scramble=True)
     qmc_results = run_sampling_experiment(
         distribution=dist,
-        target_function=average_coordinate,
+        target_function=l1_norm,
         sampler=qmc_sampler,
         n_samples=n_samples,
         n_dimensions=n_dimensions
     )
     
     # Print results
+    true_expectation = n_dimensions / 2
     print(f"\nResults for {n_dimensions} dimensions:")
     print(f"Number of samples: {n_samples}")
-    print(f"True expectation: 0.500000")
+    print(f"True expectation: {true_expectation:.6f}")
     print(f"MC  estimate: {mc_results['expectation']:.6f}")
     print(f"QMC estimate: {qmc_results['expectation']:.6f}")
     print(f"MC  variance: {mc_results['variance']:.6f}")
@@ -85,7 +86,7 @@ for i, dim in enumerate(dimensions, 1):
     plt.plot(qmc_data.sample_indices, qmc_data.running_means,
              color='orange', linewidth=2, label='Quasi-Monte Carlo')
     
-    plt.axhline(y=0.5, color='r', linestyle='--', label='True Mean')
+    plt.axhline(y=dim/2, color='r', linestyle='--', label='True Value')
     plt.xlabel('Number of Samples')
     plt.ylabel('Estimate')
     plt.title(f'Convergence ({dim} dimensions)')
@@ -94,7 +95,7 @@ for i, dim in enumerate(dimensions, 1):
 
 plt.tight_layout()
 plt.show()
-plt.savefig('examples/qmc_comparison.png')
+plt.savefig('examples/quasi-monte-carlo-exp/qmc_comparison.png')
 # Visualize 2D point sets for comparison
 if 2 in dimensions:
     n_vis_samples = 1000
@@ -129,4 +130,4 @@ if 2 in dimensions:
     
     plt.tight_layout()
     plt.show() 
-plt.savefig('examples/qmc_comparison_2d.png')
+plt.savefig('examples/quasi-monte-carlo-exp/qmc_comparison_2d.png')

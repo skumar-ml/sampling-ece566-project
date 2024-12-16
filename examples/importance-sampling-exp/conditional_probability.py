@@ -250,11 +250,15 @@ if __name__ == "__main__":
     # Plot convergence results
     plt.figure(figsize=(10, 6))
     
+    # Add ground truth line
+    plt.axhline(y=true_prob, color='black', linestyle=':', linewidth=2, 
+                label='Ground Truth')
+    
     methods = [
         (mc_results, 'blue', 'Monte Carlo'),
         (qmc_results, 'orange', 'Quasi-Monte Carlo'),
         (is_results, 'green', 'Importance Sampling'),
-        (is_qmc_results, 'red', 'IS-QMC')  # Added new method
+        (is_qmc_results, 'red', 'IS-QMC')
     ]
     
     for results, color, label in methods:
