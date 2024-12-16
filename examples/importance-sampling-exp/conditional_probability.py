@@ -69,6 +69,7 @@ def run_comparison(n_samples: int, x1_fixed: float, threshold: float):
     mc_estimator = conditional_probability_estimator(threshold)
     qmc_estimator = conditional_probability_estimator(threshold)
     is_estimator = importance_sampling_estimator(threshold, target_dist, proposal_dist)
+    is_qmc_estimator = importance_sampling_estimator(threshold, target_dist, proposal_dist)
     
     # Run experiments
     mc_sampler = UnitCubeSampler()
@@ -98,7 +99,15 @@ def run_comparison(n_samples: int, x1_fixed: float, threshold: float):
         n_dimensions=1  # Now 1D
     )
     
-    return mc_results, qmc_results, is_results
+    is_qmc_results = run_sampling_experiment(
+        distribution=proposal_dist,
+        target_function=is_qmc_estimator,
+        sampler=qmc_sampler,
+        n_samples=n_samples,
+        n_dimensions=1
+    )
+    
+    return mc_results, qmc_results, is_results, is_qmc_results
 
 def visualize_distributions(target_dist: Gaussian1D, proposal_dist: Gaussian1D, 
                           threshold: float):
@@ -138,8 +147,9 @@ def visualize_distributions(target_dist: Gaussian1D, proposal_dist: Gaussian1D,
     plt.show()
 
 def visualize_samples(mc_samples: np.ndarray, qmc_samples: np.ndarray, 
-                     is_samples: np.ndarray, target_dist: Gaussian1D, 
-                     proposal_dist: Gaussian1D, threshold: float):
+                     is_samples: np.ndarray, is_qmc_samples: np.ndarray,
+                     target_dist: Gaussian1D, proposal_dist: Gaussian1D, 
+                     threshold: float):
     """
     Visualize samples from all methods against the true distribution.
     
@@ -147,11 +157,12 @@ def visualize_samples(mc_samples: np.ndarray, qmc_samples: np.ndarray,
         mc_samples: Samples from Monte Carlo
         qmc_samples: Samples from Quasi-Monte Carlo
         is_samples: Samples from Importance Sampling
+        is_qmc_samples: Samples from Importance Sampling with QMC
         target_dist: Target (conditional) distribution
         proposal_dist: Proposal distribution for IS
         threshold: Threshold value for the probability
     """
-    plt.figure(figsize=(15, 5))
+    plt.figure(figsize=(20, 5))  # Made wider to accommodate 4 plots
     
     # Create points for the true PDF
     x = np.linspace(target_dist.mean - 4*target_dist.std, 
@@ -162,11 +173,12 @@ def visualize_samples(mc_samples: np.ndarray, qmc_samples: np.ndarray,
     methods = [
         (mc_samples, 'blue', 'Monte Carlo'),
         (qmc_samples, 'orange', 'Quasi-Monte Carlo'),
-        (is_samples, 'green', 'Importance Sampling')
+        (is_samples, 'green', 'Importance Sampling'),
+        (is_qmc_samples, 'red', 'IS-QMC')  # Added new method
     ]
     
     for idx, (samples, color, label) in enumerate(methods, 1):
-        plt.subplot(1, 3, idx)
+        plt.subplot(1, 4, idx)  # Changed to 4 subplots
         
         # Plot histogram of samples
         plt.hist(samples, bins=50, density=True, alpha=0.5, 
@@ -215,7 +227,7 @@ if __name__ == "__main__":
     true_prob = get_ground_truth(x1_fixed, threshold)
     
     # Run comparison
-    mc_results, qmc_results, is_results = run_comparison(n_samples, x1_fixed, threshold)
+    mc_results, qmc_results, is_results, is_qmc_results = run_comparison(n_samples, x1_fixed, threshold)
     
     # Print final results
     print(f"\nResults for conditional probability P(X₂ > {threshold} | X₁ = {x1_fixed}):")
@@ -223,14 +235,16 @@ if __name__ == "__main__":
     print(f"Monte Carlo:         {mc_results['convergence_data'].running_means[-1]:.6f}")
     print(f"Quasi-Monte Carlo:   {qmc_results['convergence_data'].running_means[-1]:.6f}")
     print(f"Importance Sampling: {is_results['convergence_data'].running_means[-1]:.6f}")
+    print(f"IS-QMC:             {is_qmc_results['convergence_data'].running_means[-1]:.6f}")
     
     # Extract samples for visualization
     mc_samples = mc_results['samples']
     qmc_samples = qmc_results['samples']
     is_samples = is_results['samples']
+    is_qmc_samples = is_qmc_results['samples']
     
     # Visualize samples
-    visualize_samples(mc_samples, qmc_samples, is_samples, 
+    visualize_samples(mc_samples, qmc_samples, is_samples, is_qmc_samples,
                      target_dist, proposal_dist, threshold)
     
     # Plot convergence results
@@ -239,7 +253,8 @@ if __name__ == "__main__":
     methods = [
         (mc_results, 'blue', 'Monte Carlo'),
         (qmc_results, 'orange', 'Quasi-Monte Carlo'),
-        (is_results, 'green', 'Importance Sampling')
+        (is_results, 'green', 'Importance Sampling'),
+        (is_qmc_results, 'red', 'IS-QMC')  # Added new method
     ]
     
     for results, color, label in methods:
