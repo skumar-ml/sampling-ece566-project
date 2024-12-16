@@ -3,26 +3,25 @@ from scipy.stats import qmc
 from .base import BaseSampler
 from distributions.base import Distribution
 
-class UniformSampler(BaseSampler):
-    """Simple uniform random sampling."""
+class TransformingSampler(BaseSampler):
+    """Base class for samplers that use inverse transform sampling."""
     
-    def generate_samples(self, n_samples: int) -> np.ndarray:
-        return np.random.uniform(
-            low=-1, high=1, 
-            size=(n_samples, self.n_dimensions)
-        )
+    def transform_samples(self, uniform_samples: np.ndarray) -> np.ndarray:
+        """Transform uniform samples to target distribution."""
+        return self.distribution.inverse_cdf(uniform_samples)
 
-class UnitCubeSampler(BaseSampler):
-    """Uniform sampling from [0,1]^n."""
+class UnitCubeSampler(TransformingSampler):
+    """Uniform random sampling with inverse transform."""
     
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        return np.random.uniform(
+        uniform_samples = np.random.uniform(
             low=0, high=1, 
             size=(n_samples, self.n_dimensions)
         )
+        return self.transform_samples(uniform_samples)
 
-class SobolSampler(BaseSampler):
-    """Quasi-Monte Carlo sampler using Sobol sequences."""
+class SobolSampler(TransformingSampler):
+    """Quasi-Monte Carlo sampler using Sobol sequences with inverse transform."""
     
     def __init__(self, scramble: bool = True):
         super().__init__()
@@ -37,9 +36,10 @@ class SobolSampler(BaseSampler):
         )
     
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        return self.sampler.random_base2(
+        uniform_samples = self.sampler.random_base2(
             m=int(np.ceil(np.log2(n_samples)))
         )
+        return self.transform_samples(uniform_samples)
 
 class MetropolisHastingsSampler(BaseSampler):
     """Metropolis-Hastings MCMC sampler."""

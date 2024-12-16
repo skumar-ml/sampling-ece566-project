@@ -5,7 +5,7 @@ from main import run_sampling_experiment
 import matplotlib.pyplot as plt
 
 def average_coordinate(x: np.ndarray) -> float:
-    return np.mean(x)
+    return np.sum(x)
 
 def run_comparison(n_dimensions: int, n_samples: int):
     # Setup distribution
@@ -44,7 +44,7 @@ def run_comparison(n_dimensions: int, n_samples: int):
 
 # Run experiments for different dimensions
 dimensions = [2, 5, 10, 20]
-n_samples = 2**13  # Using power of 2 for Sobol sequences
+n_samples = 2**9  # Using power of 2 for Sobol sequences
 
 plt.figure(figsize=(15, 10))
 
@@ -53,27 +53,48 @@ for i, dim in enumerate(dimensions, 1):
     
     plt.subplot(2, 2, i)
     
-    # Plot convergence
+    # Plot convergence for MC
     mc_data = mc_results['convergence_data']
+    mc_stderr = np.sqrt(mc_data.running_variances / mc_data.sample_indices)
+    
+    plt.fill_between(
+        mc_data.sample_indices,
+        mc_data.running_means - mc_stderr,
+        mc_data.running_means + mc_stderr,
+        alpha=0.2,
+        color='blue',
+        label='MC Confidence'
+    )
+    
+    plt.plot(mc_data.sample_indices, mc_data.running_means,
+             color='blue', linewidth=2, label='Monte Carlo')
+    
+    # Plot convergence for QMC
     qmc_data = qmc_results['convergence_data']
+    qmc_stderr = np.sqrt(qmc_data.running_variances / qmc_data.sample_indices)
     
-    plt.plot(mc_data.sample_indices, 
-             np.abs(mc_data.running_means - 0.5),
-             label='Monte Carlo', alpha=0.7)
-    plt.plot(qmc_data.sample_indices,
-             np.abs(qmc_data.running_means - 0.5),
-             label='Quasi-Monte Carlo', alpha=0.7)
+    plt.fill_between(
+        qmc_data.sample_indices,
+        qmc_data.running_means - qmc_stderr,
+        qmc_data.running_means + qmc_stderr,
+        alpha=0.2,
+        color='orange',
+        label='QMC Confidence'
+    )
     
+    plt.plot(qmc_data.sample_indices, qmc_data.running_means,
+             color='orange', linewidth=2, label='Quasi-Monte Carlo')
+    
+    plt.axhline(y=0.5, color='r', linestyle='--', label='True Mean')
     plt.xlabel('Number of Samples')
-    plt.ylabel('Absolute Error')
-    plt.title(f'Error Convergence ({dim} dimensions)')
-    plt.yscale('log')
+    plt.ylabel('Estimate')
+    plt.title(f'Convergence ({dim} dimensions)')
     plt.grid(True)
     plt.legend()
 
 plt.tight_layout()
 plt.show()
-
+plt.savefig('examples/qmc_comparison.png')
 # Visualize 2D point sets for comparison
 if 2 in dimensions:
     n_vis_samples = 1000
@@ -108,3 +129,4 @@ if 2 in dimensions:
     
     plt.tight_layout()
     plt.show() 
+plt.savefig('examples/qmc_comparison_2d.png')

@@ -8,8 +8,6 @@ import matplotlib.pyplot as plt
 def average_coordinate(x: np.ndarray) -> float:
     return np.mean(x)
 
-# TODO: Repeat experiment as n_dimensions increases
-
 # Parameters
 n_dimensions = 5
 n_samples = 10000
@@ -47,7 +45,29 @@ print(f"Estimated variance: {results['variance']:.6f}")
 # Plot convergence
 conv_data = results['convergence_data']
 plt.figure(figsize=(10, 6))
-plt.plot(conv_data.sample_indices, conv_data.running_means, label='Running Mean')
+
+# Calculate standard errors for confidence bands
+standard_errors = np.sqrt(conv_data.running_variances / conv_data.sample_indices)
+
+# Create confidence bands
+upper_bound = conv_data.running_means + standard_errors
+lower_bound = conv_data.running_means - standard_errors
+
+# Plot shaded confidence region
+plt.fill_between(
+    conv_data.sample_indices, 
+    lower_bound, 
+    upper_bound, 
+    alpha=0.2,  # Transparent shading
+    color='blue'  # Match line color
+)
+
+# Plot main line on top
+plt.plot(conv_data.sample_indices, conv_data.running_means, 
+         color='blue', 
+         linewidth=2, 
+         label='Running Mean')
+
 plt.axhline(y=0.5, color='r', linestyle='--', label='True Mean')
 plt.xlabel('Number of Samples')
 plt.ylabel('Estimate')
@@ -55,14 +75,4 @@ plt.title('Convergence of Monte Carlo Estimate')
 plt.legend()
 plt.grid(True)
 plt.show()
-
-# Plot error
-plt.figure(figsize=(10, 6))
-plt.plot(conv_data.sample_indices, np.abs(conv_data.running_means - 0.5), label='Absolute Error')
-plt.xlabel('Number of Samples')
-plt.ylabel('Absolute Error')
-plt.title('Error Convergence')
-plt.yscale('log')
-plt.grid(True)
-plt.legend()
-plt.show() 
+plt.savefig('examples/unit_cube_example.png')

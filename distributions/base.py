@@ -12,4 +12,9 @@ class Distribution(ABC):
     @abstractmethod
     def log_pdf(self, x: np.ndarray) -> float:
         """Compute log probability density at point x."""
-        pass 
+        pass
+    
+    @abstractmethod
+    def inverse_cdf(self, u: np.ndarray) -> np.ndarray:
+        """Transform uniform samples to this distribution."""
+        pass
