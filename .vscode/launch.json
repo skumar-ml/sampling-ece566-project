@@ -8,7 +8,7 @@
             "name": "Python Debugger: Module",
             "type": "debugpy",
             "request": "launch",
-            "module": "examples.conditional_probability"
+            "module": "examples.importance-sampling-exp.conditional_probability_multiDim"
         }
     ]
 }
