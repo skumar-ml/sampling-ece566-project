@@ -117,7 +117,7 @@ def run_dimension_experiment(dims: List[int], n_samples: int):
         
         # Compute thresholds and ground truth
         thresholds = get_thresholds(cond_mean, cond_cov, target_prob)
-        true_prob = compute_ground_truth(cond_mean, cond_cov, thresholds)
+        true_prob = compute_ground_truth(cond_mean, cond_cov, thresholds, n_mc=10**7)
         
         # Create target distribution
         target_dist = GaussianMV(mean=cond_mean, cov=cond_cov)
@@ -220,6 +220,7 @@ def optimal_proposal_estimator(target_dist: GaussianMV):
         Returns:
             Array of shape (n_samples,) with weights
         """
+
         return target_dist.pdf(x)
     
     return estimator
@@ -247,7 +248,7 @@ def plot_dimension_results(results: List[dict]):
                 color=colors[method], linewidth=2)
     
     plt.xlabel('Dimension')
-    plt.ylabel('Relative Error')
+    plt.ylabel('Relative Percentage Error')
     plt.title('Relative Error vs Dimension by Method')
     plt.grid(True)
     plt.legend()

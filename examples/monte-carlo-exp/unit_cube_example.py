@@ -1,6 +1,6 @@
 import numpy as np
 from distributions.implementations import UniformCube
-from samplers.implementations import UniformSampler
+from samplers.implementations import UnitCubeSampler
 from main import run_sampling_experiment
 import matplotlib.pyplot as plt
 
@@ -14,14 +14,6 @@ n_samples = 10000
 
 # Setup distribution
 dist = UniformCube(n_dimensions)
-
-# Modify UniformSampler for [0,1] range instead of [-1,1]
-class UnitCubeSampler(UniformSampler):
-    def generate_samples(self, n_samples: int) -> np.ndarray:
-        return np.random.uniform(
-            low=0, high=1, 
-            size=(n_samples, self.n_dimensions)
-        )
 
 # Setup sampler
 sampler = UnitCubeSampler()
@@ -75,4 +67,4 @@ plt.title('Convergence of Monte Carlo Estimate')
 plt.legend()
 plt.grid(True)
 plt.show()
-plt.savefig('examples/unit_cube_example.png')
+plt.savefig('examples/monte-carlo-exp/unit_cube_example.png')
