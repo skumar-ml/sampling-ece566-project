@@ -37,7 +37,7 @@ def run_sampling_experiment(
     
     # Generate samples and compute function values
     samples = sampler.generate_samples(n_samples)
-    function_values = np.array([target_function(sample) for sample in samples])
+    function_values = target_function(samples)
     
     # Compute statistics
     expectation = np.mean(function_values)

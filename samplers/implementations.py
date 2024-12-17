@@ -69,15 +69,7 @@ class TruncatedMHSampler(BaseSampler):
         Construct proposal covariance that respects the target's correlation structure
         but allows for adaptive step sizes in each dimension.
         """
-        # Get correlation matrix of target distribution
-        std = np.sqrt(np.diag(self.distribution.cov))
-        corr = self.distribution.cov / np.outer(std, std)
-        
-        # Scale step sizes by standard deviations
-        scaled_steps = self.step_size * std
-        
-        # Construct proposal covariance
-        return np.outer(scaled_steps, scaled_steps) * corr
+        return self.step_size * self.distribution.cov
     
     def _log_target(self, x: np.ndarray) -> float:
         """Compute log of unnormalized target density."""
@@ -112,10 +104,18 @@ class TruncatedMHSampler(BaseSampler):
                 self.acceptance_count += 1
             else:
                 samples[i] = samples[i-1]
+
+            # Adapt step size during burn-in
+            if i % 500 == 0 and i < self.burn_in:
+                acceptance_rate = self.acceptance_count / self.total_proposals
+                if acceptance_rate < 0.2:
+                    self.step_size *= 0.75  # Reduce step size
+                elif acceptance_rate > 0.4:
+                    self.step_size *= 1.25  # Increase step size
         
         # Print acceptance rate
         acceptance_rate = self.acceptance_count / self.total_proposals
-        print(f"MH acceptance rate: {acceptance_rate:.2f}")
+        print(f"MH acceptance rate: {acceptance_rate:.2f} and step size: {self.step_size:.2f}")
         
         # Update current state for next call
         self.current_state = samples[-1]
