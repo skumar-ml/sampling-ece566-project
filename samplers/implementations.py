@@ -63,87 +63,49 @@ class TruncatedMHSampler(BaseSampler):
     Metropolis-Hastings sampler for truncated distributions:
     p*(x) ∝ 1(x > thresholds) * target_dist.pdf(x)
     """
-    def __init__(self, thresholds: np.ndarray, step_size: float = 0.3, burn_in: int = 2000):
+    def __init__(self, thresholds: np.ndarray, step_size: float = 0.1, burn_in: int = 1000, log_target_density=None):
         super().__init__()
         self.thresholds = thresholds
-        self.step_size = step_size  # Reduced for better acceptance rate
-        self.burn_in = burn_in  # Increased for better mixing
-        self.current_state = None
-        self.acceptance_count = 0
-        self.total_proposals = 0
-    
+        self.step_size = step_size
+        self.burn_in = burn_in
+        self.custom_log_target_density = log_target_density
+        
     def setup(self, distribution: Distribution, n_dimensions: int):
-        super().setup(distribution, n_dimensions)
-        self.current_state = self._get_initial_state()
+        self.distribution = distribution
+        self.n_dimensions = n_dimensions
+        
+        # Initialize starting point above thresholds
+        self.current_state = self.generate_valid_initial_state()
     
-    def _get_initial_state(self) -> np.ndarray:
-        """Initialize chain starting point deterministically."""
-        std = np.sqrt(np.diag(self.distribution.cov))
-        return self.thresholds + 1.0 * std  # Start slightly above thresholds
-    
-    def _get_proposal_covariance(self) -> np.ndarray:
-        """
-        Construct proposal covariance that respects the target's correlation structure
-        but allows for adaptive step sizes in each dimension.
-        """
-        return self.step_size * self.distribution.cov
-    
-    def _log_target(self, x: np.ndarray) -> float:
-        """Compute log of unnormalized target density."""
-        if np.any(x <= self.thresholds):
-            return -np.inf
+    def log_target_density(self, x):
+        if self.custom_log_target_density is not None:
+            return self.custom_log_target_density(x)
         return self.distribution.log_pdf(x)
     
+    def generate_valid_initial_state(self):
+        while True:
+            x = self.distribution.mean + np.random.randn(self.n_dimensions)
+            if np.all(x > self.thresholds):
+                return x
+    
+    def propose_next_state(self):
+        return self.current_state + self.step_size * np.random.randn(self.n_dimensions)
+    
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        """Generate samples using M-H algorithm."""
         samples = np.zeros((n_samples + self.burn_in, self.n_dimensions))
         samples[0] = self.current_state
         
-        # Get proposal covariance
-        proposal_cov = self._get_proposal_covariance()
-        
-        # Reset acceptance counters
-        self.acceptance_count = 0
-        self.total_proposals = 0
-        
         for i in range(1, n_samples + self.burn_in):
-            # Propose new state
-            proposal = np.random.multivariate_normal(
-                samples[i-1], proposal_cov)
+            proposed_state = self.propose_next_state()
             
-            # Compute acceptance ratio
-            log_ratio = self._log_target(proposal) - self._log_target(samples[i-1])
+            current_log_density = self.log_target_density(self.current_state)
+            proposed_log_density = self.log_target_density(proposed_state)
             
-            # Accept or reject
-            self.total_proposals += 1
-            if np.log(np.random.random()) < log_ratio:
-                samples[i] = proposal
-                self.acceptance_count += 1
-            else:
-                samples[i] = samples[i-1]
-
-            # Adapt step size during burn-in
-            if i % 500 == 0 and i < self.burn_in:
-                acceptance_rate = self.acceptance_count / self.total_proposals
-                if acceptance_rate < 0.2:
-                    self.step_size *= 0.75  # Reduce step size
-                elif acceptance_rate > 0.4:
-                    self.step_size *= 1.25  # Increase step size
-        
-        # Print acceptance rate
-        acceptance_rate = self.acceptance_count / self.total_proposals
-        print(f"MH acceptance rate: {acceptance_rate:.2f} and step size: {self.step_size:.2f}")
-        
-        # Update current state for next call
-        self.current_state = samples[-1]
-        
-        # Discard burn-in and thin the chain
-        final_samples = samples[self.burn_in:]
-        
-        # Check if chain is well-mixed
-        if acceptance_rate < 0.1:
-            print("Warning: Low acceptance rate - consider decreasing step_size")
-        elif acceptance_rate > 0.7:
-            print("Warning: High acceptance rate - consider increasing step_size")
+            log_acceptance_ratio = proposed_log_density - current_log_density
             
-        return final_samples
+            if np.log(np.random.rand()) < log_acceptance_ratio:
+                self.current_state = proposed_state
+            
+            samples[i] = self.current_state
+        
+        return samples[self.burn_in:]

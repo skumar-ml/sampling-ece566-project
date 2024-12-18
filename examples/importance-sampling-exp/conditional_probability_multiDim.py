@@ -1,6 +1,6 @@
 import numpy as np
 from distributions.implementations import GaussianMV
-from samplers.implementations import UnitCubeSampler, SobolSampler, TruncatedMHSampler
+from samplers.implementations import MonteCarloSampler, SobolSampler, TruncatedMHSampler
 from main import run_sampling_experiment
 import matplotlib.pyplot as plt
 from scipy.stats import norm, gaussian_kde
@@ -52,12 +52,28 @@ def compute_ground_truth(cond_mean: np.ndarray, cond_cov: np.ndarray,
 
 def mh_kde_importance_sampling(target_dist: GaussianMV, thresholds: np.ndarray, 
                              n_samples: int, n_mh_samples: int = 10000):
-    """Performs MH-KDE-IS sampling."""
-    mh_sampler = TruncatedMHSampler(thresholds=thresholds, step_size=0.1, burn_in=2000)
+    """Performs MH-KDE-IS sampling targeting the optimal distribution."""
+    def optimal_log_density(x):
+        # Log density of target * indicator
+        if np.all(x > thresholds):
+            return target_dist.log_pdf(x)
+        return -np.inf
+    
+    mh_sampler = TruncatedMHSampler(
+        thresholds=thresholds, 
+        step_size=0.1, 
+        burn_in=2000,
+        log_target_density=optimal_log_density
+    )
     mh_sampler.setup(target_dist, len(thresholds))
     mh_samples = mh_sampler.generate_samples(n_mh_samples)
     
-    kde = gaussian_kde(mh_samples.T)
+    # Only use valid samples for KDE
+    valid_samples = mh_samples[np.all(mh_samples > thresholds, axis=1)]
+    if len(valid_samples) < 10:
+        raise ValueError("Too few valid samples for KDE estimation")
+    
+    kde = gaussian_kde(valid_samples.T)
     kde_samples = kde.resample(n_samples).T
     
     return kde_samples, kde
@@ -112,7 +128,7 @@ def run_dimension_experiment(dims: List[int], n_samples: int):
         )
         mh_kde_is_est = mh_kde_is_estimator(target_dist, kde, thresholds)
         
-        mc_sampler = UnitCubeSampler()
+        mc_sampler = MonteCarloSampler()
         qmc_sampler = SobolSampler(scramble=True)
         
         methods = [
@@ -181,7 +197,7 @@ def plot_dimension_results(results: List[dict]):
 
 if __name__ == "__main__":
     dimensions = list(range(3, 15))
-    n_samples = 2**16
+    n_samples = 2**14
     
     results = run_dimension_experiment(dimensions, n_samples)
     
