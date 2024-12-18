@@ -1,49 +1,37 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.datasets import load_diabetes
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_squared_error
-from scipy.stats.qmc import Sobol
+from scipy.stats import qmc
 
-
-# Load medical cost data
-def load_data(file_path: str) -> pd.DataFrame:
+# Load diabetes dataset
+def load_diabetes_data() -> pd.DataFrame:
     """
-    Loads medical cost data from a CSV file.
-    Args:
-        file_path (str): Path to the CSV file.
+    Loads the diabetes dataset from sklearn.
     Returns:
         pd.DataFrame: DataFrame containing the dataset.
     """
-    try:
-        data = pd.read_csv(file_path)
-        if 'charges' not in data.columns:
-            raise ValueError("'charges' column not found in the dataset.")
-        return data
-    except Exception as e:
-        print(f"Error loading data: {e}")
-        exit(1)
+    diabetes = load_diabetes()
+    data = pd.DataFrame(data=diabetes.data, columns=diabetes.feature_names)
+    data['target'] = diabetes.target
+    return data
 
-
-# Quasi-Monte Carlo sampling experiment
+# Quasi Monte Carlo sampling experiment
 def run_qmc_experiment(data: np.ndarray, n_samples: int):
     """
-    Runs a Quasi-Monte Carlo (QMC) experiment to estimate the mean and variance.
+    Runs a Quasi Monte Carlo experiment to estimate the mean and variance.
     Args:
         data (np.ndarray): Array of values (e.g., costs or predictions).
-        n_samples (int): Number of Quasi-Monte Carlo samples.
+        n_samples (int): Number of Quasi Monte Carlo samples.
     Returns:
         dict: Contains results of the experiment.
     """
-    n_data = len(data)
-
-    # Create Sobol sequence
-    sampler = Sobol(d=1, scramble=True)  # 1-dimensional Sobol sequence
-    qmc_points = sampler.random(n=n_samples) * n_data  # Scale to data indices
-    sample_indices = np.floor(qmc_points).astype(int).flatten()
-    sample_indices = np.clip(sample_indices, 0, n_data - 1)  # Ensure valid indices
-
+    sampler = qmc.Sobol(d=1, scramble=True)
+    qmc_samples = sampler.random_base2(m=int(np.log2(n_samples)))
+    sample_indices = (qmc_samples[:, 0] * len(data)).astype(int)
     samples = data[sample_indices]
 
     # Compute running sums, means, and variances
@@ -62,11 +50,10 @@ def run_qmc_experiment(data: np.ndarray, n_samples: int):
         }
     }
 
-
 # Plot convergence
 def plot_convergence(results: dict, true_mean: float, file_name: str = None):
     """
-    Plots the convergence of the QMC estimate.
+    Plots the convergence of the Quasi Monte Carlo estimate.
     Args:
         results (dict): Results dictionary containing running means and variances.
         true_mean (float): True mean of the values.
@@ -100,7 +87,7 @@ def plot_convergence(results: dict, true_mean: float, file_name: str = None):
 
     plt.xlabel('Number of Samples')
     plt.ylabel('Estimate of Mean')
-    plt.title('Convergence of Quasi-Monte Carlo Estimate')
+    plt.title('Convergence of Quasi Monte Carlo Estimate')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -109,22 +96,18 @@ def plot_convergence(results: dict, true_mean: float, file_name: str = None):
         plt.savefig(file_name)
     plt.show()
 
-
 # Train a linear regression model
 def train_model(data: pd.DataFrame) -> np.ndarray:
     """
-    Trains a linear regression model to predict medical costs.
+    Trains a linear regression model to predict diabetes progression.
     Args:
         data (pd.DataFrame): DataFrame containing the dataset.
     Returns:
-        np.ndarray: Predicted medical costs.
+        np.ndarray: Predicted progression values.
     """
     # Prepare features and target
-    features = data.drop(columns=['charges'])
-    target = data['charges']
-
-    # One-hot encoding for categorical variables
-    features = pd.get_dummies(features, drop_first=True)
+    features = data.drop(columns=['target'])
+    target = data['target']
 
     # Train-test split
     X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
@@ -140,38 +123,36 @@ def train_model(data: pd.DataFrame) -> np.ndarray:
 
     return model.predict(features)
 
-
 if __name__ == "__main__":
     # Load data
-    file_path = "https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv"
-    medical_cost_data = load_data(file_path)
+    diabetes_data = load_diabetes_data()
 
     # Parameters
-    n_samples = 512
+    n_samples = 1024
 
-    # Estimate true mean of medical costs
-    true_mean = medical_cost_data['charges'].mean()
+    # Estimate true mean of target (disease progression)
+    true_mean = diabetes_data['target'].mean()
 
-    # Run Quasi-Monte Carlo experiment for medical cost
-    cost_results = run_qmc_experiment(medical_cost_data['charges'].values, n_samples)
+    # Run Quasi Monte Carlo experiment for target
+    target_results = run_qmc_experiment(diabetes_data['target'].values, n_samples)
 
-    # Print results for medical cost
-    print("=== Medical Cost Estimation ===")
+    # Print results for target
+    print("=== Diabetes Progression Estimation ===")
     print(f"Number of samples: {n_samples}")
-    print(f"Estimated expectation: {cost_results['expectation']:.6f}")
+    print(f"Estimated expectation: {target_results['expectation']:.6f}")
     print(f"True expectation: {true_mean:.6f}")
-    print(f"Estimated variance: {cost_results['variance']:.6f}")
+    print(f"Estimated variance: {target_results['variance']:.6f}")
 
-    # Plot convergence for medical cost
-    plot_convergence(cost_results, true_mean, file_name='qmc_medical_cost_convergence.png')
+    # Plot convergence for target
+    plot_convergence(target_results, true_mean, file_name='examples/monte-carlo-exp/diabetes_target_convergence.png')
 
-    # Train a model to predict medical costs
-    model_predictions = train_model(medical_cost_data)
+    # Train a model to predict diabetes progression
+    model_predictions = train_model(diabetes_data)
 
     # Estimate true mean of model predictions
     true_model_mean = model_predictions.mean()
 
-    # Run Quasi-Monte Carlo experiment for model predictions
+    # Run Quasi Monte Carlo experiment for model predictions
     model_results = run_qmc_experiment(model_predictions, n_samples)
 
     # Print results for model predictions
@@ -184,6 +165,5 @@ if __name__ == "__main__":
     plot_convergence(
         model_results,
         true_model_mean,
-        file_name='qmc_model_prediction_convergence.png'
+        file_name='examples/monte-carlo-exp/diabetes_model_prediction_convergence.png'
     )
-
