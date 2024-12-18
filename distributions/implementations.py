@@ -147,18 +147,22 @@ class GMMDistribution(Distribution):
         """Compute log probability density."""
         if self.gmm is None:
             raise RuntimeError("Must call fit() before computing log_pdf")
+
+        # If x.ndim == 1, add a dimension
+        if x.ndim == 1:
+            x = x[np.newaxis, :]
+
         return self.gmm.score_samples(x)
     
-    def fit(self, X_scaled: np.ndarray, feature_names: pd.Index):
+    def fit(self, X_scaled: np.ndarray):
         """
         Fit the GMM to scaled data.
         
         Args:
             X_scaled: Array of scaled features
-            feature_names: Names of features in correct order
+            feature_names: Optional parameter, not used
         """
-        self.feature_names = feature_names
-        self.n_dimensions = len(feature_names)
+        self.n_dimensions = X_scaled.shape[1]
         
         # Fit GMM directly to scaled data
         self.gmm = GaussianMixture(
@@ -233,3 +237,19 @@ class GMMDistribution(Distribution):
             samples_scaled[i] = mu + np.dot(L, std_normal)
         
         return samples_scaled
+    
+    @property
+    def cov(self) -> np.ndarray:
+        """
+        Returns weighted average of component covariances.
+        This is a rough approximation of the overall covariance structure.
+        """
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before accessing covariance")
+            
+        # Compute weighted average of covariances
+        avg_cov = np.zeros_like(self.gmm.covariances_[0])
+        for w, cov in zip(self.gmm.weights_, self.gmm.covariances_):
+            avg_cov += w * cov
+            
+        return avg_cov

@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 from distributions.implementations import GMMDistribution
-from samplers.implementations import SobolSampler, MonteCarloSampler
+from samplers.implementations import MonteCarloSampler, SobolSampler
 from main import run_sampling_experiment
 import matplotlib.pyplot as plt
 
@@ -28,31 +28,15 @@ def load_data(file_path: str) -> pd.DataFrame:
         exit(1)
 
 
-def create_features(data: pd.DataFrame) -> pd.DataFrame:
+def prepare_features(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Performs feature engineering on the medical cost dataset.
+    Prepare features with one-hot encoding for categorical variables.
     """
     # Create a copy to avoid modifying the original
     df = data.copy()
     
-    # BMI-related features
-    df['bmi_squared'] = df['bmi'] ** 2
-    df['is_overweight'] = (df['bmi'] > 25).astype(int)
-    df['is_obese'] = (df['bmi'] > 30).astype(int)
-    
-    # Age-related features
-    df['age_squared'] = df['age'] ** 2
-    df['is_senior'] = (df['age'] >= 50).astype(int)
-    
-    # Interaction terms
-    df['smoker_bmi'] = df['smoker'].map({'yes': 1, 'no': 0}) * df['bmi']
-    df['smoker_age'] = df['smoker'].map({'yes': 1, 'no': 0}) * df['age']
-    
-    # One-hot encoding for categorical variables
-    df = pd.get_dummies(df, columns=['sex', 'region'], drop_first=True)
-    
-    # Convert smoker to numeric
-    df['smoker'] = df['smoker'].map({'yes': 1, 'no': 0})
+    # One-hot encode categorical variables
+    df = pd.get_dummies(df, columns=['sex', 'region', 'smoker'])
     
     return df
 
@@ -60,10 +44,10 @@ def create_features(data: pd.DataFrame) -> pd.DataFrame:
 def train_model(data: pd.DataFrame) -> tuple:
     """
     Trains a gradient boosting model to predict medical costs.
-    Returns the model and the scaler.
+    Returns the model, scaler, and feature names.
     """
     # Prepare features
-    df = create_features(data)
+    df = prepare_features(data)
     
     # Separate features and target
     X = df.drop(columns=['charges'])
@@ -95,7 +79,7 @@ def train_model(data: pd.DataFrame) -> tuple:
     train_preds = model.predict(X_train_scaled)
     test_preds = model.predict(X_test_scaled)
     
-    # Calculate metrics
+    # Calculate and print metrics
     train_r2 = r2_score(y_train, train_preds)
     test_r2 = r2_score(y_test, test_preds)
     test_mae = mean_absolute_error(y_test, test_preds)
@@ -142,9 +126,9 @@ if __name__ == "__main__":
     # Train model and get scaler
     model, scaler, feature_names = train_model(medical_cost_data)
     
-    # Create and scale engineered features for GMM fitting
-    df_engineered = create_features(medical_cost_data)
-    X_scaled = scaler.transform(df_engineered[feature_names])
+    # Create and scale features for GMM fitting
+    df_prepared = prepare_features(medical_cost_data)
+    X_scaled = scaler.transform(df_prepared[feature_names])
     
     # Setup distribution
     distribution = GMMDistribution(n_components=3)

@@ -1,203 +1,459 @@
 import numpy as np
-from distributions.implementations import Gaussian1D
-from samplers.implementations import UnitCubeSampler, SobolSampler
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import GradientBoostingRegressor
+from distributions.implementations import GMMDistribution
+from samplers.implementations import MonteCarloSampler, SobolSampler, TruncatedMHSampler
 from main import run_sampling_experiment
 import matplotlib.pyplot as plt
-from scipy.stats import norm
-import pandas as pd
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import r2_score, mean_absolute_error
+from scipy.stats import norm, gaussian_kde
+from sklearn.mixture import GaussianMixture
+from typing import List, Tuple
 
-# Load the medical cost dataset
-data = pd.read_csv("https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv")
+# At the top of the file, add these constants
+CONTINUOUS_FEATURES = ['age', 'bmi', 'children']
+CATEGORICAL_FEATURES = ['sex', 'smoker', 'region']
 
-# Preprocess the dataset
-categorical_features = ["sex", "smoker", "region"]
-numerical_features = ["age", "bmi", "children"]
-
-target_column = "charges"
-
-# One-hot encode categorical features and standardize numerical features
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), numerical_features),
-        ("cat", OneHotEncoder(), categorical_features)
-    ]
-)
-
-X = preprocessor.fit_transform(data.drop(columns=[target_column]))
-y = data[target_column].values
-
-# Split into train/test for simplicity
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-# Define conditional distribution for medical cost dataset
-def get_conditional_distribution_medical(fixed_value: float, feature_index: int):
+def prepare_features(data: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame, List[dict]]:
     """
-    Creates a conditional distribution for the medical cost dataset.
-    Args:
-        fixed_value: Fixed value of the feature
-        feature_index: Index of the feature being conditioned on
+    Prepare features by separating continuous and categorical variables.
+    Returns:
+        - continuous features DataFrame
+        - full encoded features DataFrame
+        - list of categorical feature mappings
     """
-    relevant_feature = X_train[:, feature_index]
-    target_conditioned = y_train[relevant_feature > fixed_value]
-    conditional_mean = target_conditioned.mean() if len(target_conditioned) > 0 else y_train.mean()
-    conditional_std = target_conditioned.std() if len(target_conditioned) > 0 else y_train.std()
-    return Gaussian1D(mean=conditional_mean, std=conditional_std)
-
-# Get conditional and proposal distributions
-feature_index = 1  # Example: second feature (e.g., BMI)
-fixed_feature_value = X_train[:, feature_index].mean()
-target_threshold = y_train.mean() + y_train.std()
-
-conditional_dist = get_conditional_distribution_medical(fixed_feature_value, feature_index)
-proposal_dist = Gaussian1D(mean=target_threshold, std=conditional_dist.std)
-
-# Define estimators
-def conditional_probability_estimator(threshold: float):
-    def estimator(x: np.ndarray) -> float:
-        return (x > threshold).astype(float)
-    return estimator
-
-def importance_sampling_estimator(threshold: float, target_dist: Gaussian1D, proposal_dist: Gaussian1D):
-    def estimator(x: np.ndarray) -> float:
-        indicator = (x > threshold).astype(float)
-        weights = target_dist.pdf(x) / proposal_dist.pdf(x)
-        return indicator * weights
-    return estimator
-
-# Run experiments
-n_samples = 2**9
-
-mc_sampler = UnitCubeSampler()
-qmc_sampler = SobolSampler(scramble=True)
-
-mc_estimator = conditional_probability_estimator(target_threshold)
-qmc_estimator = conditional_probability_estimator(target_threshold)
-is_estimator = importance_sampling_estimator(target_threshold, conditional_dist, proposal_dist)
-is_qmc_estimator = importance_sampling_estimator(target_threshold, conditional_dist, proposal_dist)
-
-mc_results = run_sampling_experiment(
-    distribution=conditional_dist,
-    target_function=mc_estimator,
-    sampler=mc_sampler,
-    n_samples=n_samples,
-    n_dimensions=1
-)
-
-qmc_results = run_sampling_experiment(
-    distribution=conditional_dist,
-    target_function=qmc_estimator,
-    sampler=qmc_sampler,
-    n_samples=n_samples,
-    n_dimensions=1
-)
-
-is_results = run_sampling_experiment(
-    distribution=proposal_dist,
-    target_function=is_estimator,
-    sampler=mc_sampler,
-    n_samples=n_samples,
-    n_dimensions=1
-)
-
-is_qmc_results = run_sampling_experiment(
-    distribution=proposal_dist,
-    target_function=is_qmc_estimator,
-    sampler=qmc_sampler,
-    n_samples=n_samples,
-    n_dimensions=1
-)
-
-# Visualize distributions
-def visualize_distributions(target_dist, proposal_dist, threshold):
-    x = np.linspace(target_dist.mean - 4*target_dist.std, 
-                    proposal_dist.mean + 4*proposal_dist.std, 1000)
-    plt.figure(figsize=(10, 6))
-    plt.plot(x, target_dist.pdf(x), label='Target Distribution')
-    plt.plot(x, proposal_dist.pdf(x), label='Proposal Distribution')
-    plt.axvline(threshold, linestyle='--', color='r', label='Threshold')
-    plt.legend()
-    plt.grid()
-    plt.show()
-
-visualize_distributions(conditional_dist, proposal_dist, target_threshold)
-
-# Print results
-print(f"Results for P(Target > {target_threshold} | Feature[{feature_index}] = {fixed_feature_value}):")
-print(f"Monte Carlo: {mc_results['convergence_data'].running_means[-1]:.6f}")
-print(f"Quasi-Monte Carlo: {qmc_results['convergence_data'].running_means[-1]:.6f}")
-print(f"Importance Sampling: {is_results['convergence_data'].running_means[-1]:.6f}")
-print(f"IS-QMC: {is_qmc_results['convergence_data'].running_means[-1]:.6f}")
-
-# Visualize samples and convergence
-def visualize_samples(samples_dict, target_dist, proposal_dist, threshold):
-    x = np.linspace(target_dist.mean - 4*target_dist.std, 
-                    proposal_dist.mean + 4*proposal_dist.std, 1000)
-    plt.figure(figsize=(15, 6))
-    for i, (key, samples) in enumerate(samples_dict.items(), 1):
-        plt.subplot(1, 4, i)
-        plt.hist(samples, bins=50, density=True, alpha=0.6, label=f'{key} Samples')
-        plt.plot(x, target_dist.pdf(x), 'r--', label='True Distribution')
-        plt.axvline(threshold, linestyle='--', color='black')
-        plt.legend()
-        plt.grid()
-    plt.show()
-
-visualize_samples(
-    {
-        "Monte Carlo": mc_results['samples'],
-        "Quasi-Monte Carlo": qmc_results['samples'],
-        "Importance Sampling": is_results['samples'],
-        "IS-QMC": is_qmc_results['samples']
-    },
-    conditional_dist, proposal_dist, target_threshold
-)
-
-
-# Plot convergence results
-plt.figure(figsize=(10, 6))
-
-# Add ground truth line (if calculable)
-# Here, we use a simple approximation; adapt if you can compute true P(target > threshold | feature = fixed_value)
-true_prob = 1 - norm.cdf((target_threshold - conditional_dist.mean) / conditional_dist.std)
-plt.axhline(y=true_prob, color='black', linestyle=':', linewidth=2, label='Ground Truth')
-
-# Convergence data for different methods
-methods = [
-    (mc_results, 'blue', 'Monte Carlo'),
-    (qmc_results, 'orange', 'Quasi-Monte Carlo'),
-    (is_results, 'green', 'Importance Sampling'),
-    (is_qmc_results, 'red', 'IS-QMC')
-]
-
-for results, color, label in methods:
-    data = results['convergence_data']
-    stderr = np.sqrt(data.running_variances / data.sample_indices)
+    df = data.copy()
     
-    # Confidence intervals
-    plt.fill_between(
-        data.sample_indices,
-        data.running_means - stderr,
-        data.running_means + stderr,
-        alpha=0.2,
-        color=color,
-        label=f'{label} Confidence'
+    # Get all unique combinations of categorical variables
+    categorical_combinations = df[CATEGORICAL_FEATURES].drop_duplicates()
+    categorical_mappings = categorical_combinations.to_dict('records')
+    
+    # One-hot encode categorical variables for the full dataset
+    df_encoded = pd.get_dummies(df, columns=CATEGORICAL_FEATURES)
+    
+    return df[CONTINUOUS_FEATURES], df_encoded, categorical_mappings
+
+def get_conditional_gmm(gmm: GMMDistribution, fixed_feature_idx: int, fixed_value: float) -> GMMDistribution:
+    """
+    Creates a conditional GMM by adjusting the means and covariances of each component
+    given a fixed feature value.
+    """
+    n_components = len(gmm.weights)
+    n_dims = gmm.n_dimensions
+    
+    # Initialize arrays for new parameters
+    new_weights = np.zeros(n_components)
+    new_means = np.zeros((n_components, n_dims - 1))
+    new_covs = np.zeros((n_components, n_dims - 1, n_dims - 1))
+    
+    # For each component
+    for k in range(n_components):
+        mu = gmm.means[k]
+        sigma = gmm.covariances[k]
+        
+        # Split mean and covariance
+        mu_1 = mu[fixed_feature_idx]
+        mu_2 = np.delete(mu, fixed_feature_idx)
+        
+        sigma_11 = sigma[fixed_feature_idx, fixed_feature_idx]
+        sigma_12 = np.delete(sigma[fixed_feature_idx, :], fixed_feature_idx)
+        sigma_21 = np.delete(sigma[:, fixed_feature_idx], fixed_feature_idx)
+        sigma_22 = np.delete(np.delete(sigma, fixed_feature_idx, 0), fixed_feature_idx, 1)
+        
+        # Compute conditional parameters
+        conditional_mean = mu_2 + sigma_21 * (fixed_value - mu_1) / sigma_11
+        conditional_cov = sigma_22 - np.outer(sigma_21, sigma_12) / sigma_11
+        
+        # Update component weight based on likelihood of fixed value
+        weight_factor = norm.pdf(fixed_value, mu_1, np.sqrt(sigma_11))
+        new_weights[k] = gmm.weights[k] * weight_factor
+        
+        new_means[k] = conditional_mean
+        new_covs[k] = conditional_cov
+    
+    # Normalize weights
+    new_weights /= new_weights.sum()
+    
+    # Create new GMM with conditional parameters
+    conditional_gmm = GMMDistribution(n_components=n_components)
+    
+    # Create a dummy GMM and fit it to some data to initialize all attributes
+    dummy_data = np.random.randn(100, n_dims - 1)
+    conditional_gmm.gmm = GaussianMixture(
+        n_components=n_components, 
+        covariance_type='full'
+    ).fit(dummy_data)
+    
+    # Override the fitted parameters with our conditional parameters
+    conditional_gmm.gmm.weights_ = new_weights
+    conditional_gmm.gmm.means_ = new_means
+    conditional_gmm.gmm.covariances_ = new_covs
+    
+    # Compute precision matrices and their Cholesky decompositions
+    conditional_gmm.gmm.precisions_ = np.array([np.linalg.inv(cov) for cov in new_covs])
+    conditional_gmm.gmm.precisions_cholesky_ = np.array([
+        np.linalg.cholesky(prec).T for prec in conditional_gmm.gmm.precisions_
+    ])
+    
+    conditional_gmm.n_dimensions = n_dims - 1
+    
+    return conditional_gmm
+
+def get_truncation_threshold(model, conditional_gmm: GMMDistribution, cost_threshold: float,
+                           fixed_feature_idx: int, fixed_value: float,
+                           n_samples: int = 10000) -> np.ndarray:
+    """
+    Find reasonable truncation thresholds by sampling from conditional GMM
+    and identifying regions where cost > threshold.
+    """
+    samples = conditional_gmm.sample(n_samples)
+    samples_full = np.insert(samples, fixed_feature_idx, fixed_value, axis=1)
+    costs = model.predict(samples_full)
+    high_cost_samples = samples[costs > cost_threshold]
+    
+    # Use minimum values as thresholds with a small buffer
+    thresholds = np.min(high_cost_samples, axis=0) - 0.1
+    return thresholds
+
+def mh_kde_importance_sampling(conditional_gmm: GMMDistribution, thresholds: np.ndarray,
+                             n_samples: int, n_mh_samples: int = 10000):
+    """Performs MH-KDE-IS sampling."""
+    # Setup and run MH sampler
+    mh_sampler = TruncatedMHSampler(thresholds=thresholds, step_size=0.01, burn_in=2000)
+    mh_sampler.setup(conditional_gmm, len(thresholds))
+    mh_samples = mh_sampler.generate_samples(n_mh_samples)
+    
+    # Fit KDE to MH samples
+    kde = gaussian_kde(mh_samples.T)
+    kde_samples = kde.resample(n_samples).T
+    
+    return kde_samples, kde
+
+def mh_kde_is_estimator(model, threshold: float, 
+                       target_dist: GMMDistribution, kde: gaussian_kde,
+                       fixed_feature_idx: int, fixed_value: float):
+    """Returns an importance sampling estimator using KDE proposal."""
+    def estimator(x: np.ndarray) -> float:
+        # Reconstruct full feature vector
+        x_full = np.insert(x, fixed_feature_idx, fixed_value, axis=1)
+        costs = model.predict(x_full)
+        indicator = (costs > threshold).astype(float)
+        
+        # Compute importance weights with numerical stability
+        log_target = target_dist.log_pdf(x)
+        log_proposal = np.log(kde.evaluate(x.T))
+        log_weights = log_target - log_proposal
+        
+        # Stabilize by subtracting maximum log weight
+        max_log_weight = np.max(log_weights)
+        stable_weights = np.exp(log_weights - max_log_weight)
+        
+        return indicator * stable_weights
+    return estimator
+
+def marginalize_samples(samples: np.ndarray, categorical_mappings: List[dict], 
+                       scaler: StandardScaler, feature_names: List[str]) -> np.ndarray:
+    """
+    Duplicate samples for each categorical combination and add encoded categorical features.
+    
+    Args:
+        samples: Array of continuous feature samples (already scaled)
+        categorical_mappings: List of dictionaries containing categorical combinations
+        scaler: StandardScaler used for the full feature set
+        feature_names: List of all feature names in correct order
+    """
+    n_samples = len(samples)
+    n_combinations = len(categorical_mappings)
+    
+    # Create dummy DataFrame with categorical combinations
+    dummy_df = pd.DataFrame(categorical_mappings)
+    
+    # Add dummy continuous features (they'll be replaced later)
+    for feat in CONTINUOUS_FEATURES:
+        dummy_df[feat] = 0.0
+    
+    # One-hot encode categorical features
+    encoded_categorical = pd.get_dummies(dummy_df, columns=CATEGORICAL_FEATURES)
+    
+    # Ensure all expected columns are present
+    for col in feature_names:
+        if col not in encoded_categorical.columns:
+            encoded_categorical[col] = 0
+    
+    # Reorder columns to match feature_names
+    encoded_categorical = encoded_categorical[feature_names]
+    
+    # Get the transformed categorical features
+    categorical_transformed = scaler.transform(encoded_categorical)
+    
+    # Initialize output array
+    # Shape will be (n_samples * n_combinations, n_features)
+    output = np.zeros((n_samples * n_combinations, len(feature_names)))
+    
+    # For each sample, create versions with all categorical combinations
+    for i in range(n_samples):
+        start_idx = i * n_combinations
+        end_idx = start_idx + n_combinations
+        
+        # Copy the categorical features for this sample
+        output[start_idx:end_idx] = categorical_transformed
+        
+        # Replace the continuous features with the actual sample values
+        for j, feat in enumerate(CONTINUOUS_FEATURES):
+            feat_idx = list(feature_names).index(feat)
+            output[start_idx:end_idx, feat_idx] = samples[i, j]
+    
+    return output
+
+class MarginalizationMixin:
+    """Mixin class that handles post-sampling marginalization over categorical variables."""
+    
+    def __init__(self, fixed_feature_idx: int, fixed_value: float,
+                 categorical_mappings: List[dict], scaler: StandardScaler,
+                 feature_names: List[str]):
+        self.fixed_feature_idx = fixed_feature_idx
+        self.fixed_value = fixed_value
+        self.categorical_mappings = categorical_mappings
+        self.scaler = scaler
+        self.feature_names = feature_names
+    
+    def process_samples(self, samples: np.ndarray) -> np.ndarray:
+        """Add fixed feature and marginalize over categorical variables."""
+        # First add the fixed feature back
+        samples_with_fixed = np.insert(samples, self.fixed_feature_idx, 
+                                     self.fixed_value, axis=1)
+        
+        # Then marginalize over categorical variables
+        return marginalize_samples(samples_with_fixed, self.categorical_mappings,
+                                 self.scaler, self.feature_names)
+
+class MarginalizedMonteCarloSampler(MarginalizationMixin, MonteCarloSampler):
+    """Monte Carlo sampler with categorical marginalization."""
+    
+    def __init__(self, fixed_feature_idx: int, fixed_value: float,
+                 categorical_mappings: List[dict], scaler: StandardScaler,
+                 feature_names: List[str]):
+        MarginalizationMixin.__init__(self, fixed_feature_idx, fixed_value,
+                                    categorical_mappings, scaler, feature_names)
+        MonteCarloSampler.__init__(self)
+    
+    def generate_samples(self, n_samples: int) -> np.ndarray:
+        # Get base samples from parent class
+        base_samples = super().generate_samples(n_samples)
+        # Process samples through marginalization
+        return self.process_samples(base_samples)
+
+class MarginalizedSobolSampler(MarginalizationMixin, SobolSampler):
+    """Sobol sampler with categorical marginalization."""
+    
+    def __init__(self, fixed_feature_idx: int, fixed_value: float,
+                 categorical_mappings: List[dict], scaler: StandardScaler,
+                 feature_names: List[str], scramble: bool = True):
+        MarginalizationMixin.__init__(self, fixed_feature_idx, fixed_value,
+                                    categorical_mappings, scaler, feature_names)
+        SobolSampler.__init__(self, scramble=scramble)
+    
+    def generate_samples(self, n_samples: int) -> np.ndarray:
+        # Get base samples from parent class
+        base_samples = super().generate_samples(n_samples)
+        # Process samples through marginalization
+        return self.process_samples(base_samples)
+
+def create_threshold_function(model, threshold: float):
+    """Creates a function that returns 1 if predicted cost > threshold, 0 otherwise."""
+    def threshold_function(x: np.ndarray) -> np.ndarray:
+        costs = model.predict(x)
+        return (costs > threshold).astype(float)
+    return threshold_function
+
+if __name__ == "__main__":
+    # Load data
+    data = pd.read_csv("https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv")
+    
+    # Prepare features
+    X_continuous, X_encoded, categorical_mappings = prepare_features(data)
+    X = X_encoded.drop(columns=['charges'])  # Full encoded features for model training
+    y = data['charges']
+    
+    # Train test split and scale continuous features
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
+    # Train model
+    model = GradientBoostingRegressor(
+        n_estimators=200,
+        max_depth=5,
+        min_samples_split=5,
+        learning_rate=0.1,
+        random_state=42
+    )
+    model.fit(X_train_scaled, y_train)
+    
+    # Calculate and print metrics
+    train_preds = model.predict(X_train_scaled)
+    test_preds = model.predict(X_test_scaled)
+    
+    train_r2 = r2_score(y_train, train_preds)
+    test_r2 = r2_score(y_test, test_preds)
+    test_mae = mean_absolute_error(y_test, test_preds)
+    
+    print("\nModel Performance:")
+    print(f"Train R² Score: {train_r2:.4f}")
+    print(f"Test R² Score: {test_r2:.4f}")
+    print(f"Test MAE: ${test_mae:,.2f}")
+    
+    # Get indices of continuous features in the encoded dataset
+    continuous_feature_indices = [list(X.columns).index(feat) for feat in CONTINUOUS_FEATURES]
+    
+    # Fit GMM only to continuous features using the indices
+    gmm = GMMDistribution(n_components=3)
+    gmm.fit(X_train_scaled[:, continuous_feature_indices])
+    
+    # Set condition and threshold
+    fixed_feature_idx = 0  # age
+    
+    # Create a dummy row with mean values for all features except age
+    dummy_row = pd.DataFrame(columns=X.columns)
+    dummy_row.loc[0] = X_train.mean()  # Fill with mean values
+    dummy_row.iloc[0, fixed_feature_idx] = 23  # Set age to 23
+    
+    # Scale the entire feature vector
+    fixed_value = scaler.transform(dummy_row)[0, fixed_feature_idx]
+    cost_threshold = 20000
+    n_samples = 2**9
+    
+    # Get conditional distribution
+    conditional_gmm = get_conditional_gmm(gmm, fixed_feature_idx, fixed_value)
+    
+    # # Get truncation thresholds for MH sampler
+    # thresholds = get_truncation_threshold(
+    #     model, conditional_gmm, cost_threshold,
+    #     fixed_feature_idx, fixed_value
+    # )
+    
+    # # Generate KDE proposal distribution using MH samples
+    # kde_samples, kde = mh_kde_importance_sampling(
+    #     conditional_gmm=conditional_gmm,
+    #     thresholds=thresholds,
+    #     n_samples=n_samples,
+    #     n_mh_samples=n_samples
+    # )
+
+    # mh_kde_estimator = mh_kde_is_estimator(
+    #     model, cost_threshold, conditional_gmm, fixed_feature_idx, fixed_value
+    # )
+    
+    # Run experiments with new samplers
+    mc_sampler = MarginalizedMonteCarloSampler(
+        fixed_feature_idx=fixed_feature_idx,
+        fixed_value=fixed_value,
+        categorical_mappings=categorical_mappings,
+        scaler=scaler,
+        feature_names=X.columns
     )
     
-    # Running means
-    plt.plot(data.sample_indices, data.running_means, color=color, linewidth=2, label=label)
-
-plt.xlabel('Number of Samples')
-plt.ylabel(f'P(Target > {target_threshold:.2f} | Feature[{feature_index}] = {fixed_feature_value:.2f})')
-plt.title(f'Convergence of Conditional Probability Estimation')
-plt.grid(True)
-plt.legend()
-plt.tight_layout()
-
-# Save the plot
-output_path = 'conditional_probability.png'
-plt.savefig(output_path)
-print(f"Saved convergence plot as {output_path}")
-plt.show()
+    qmc_sampler = MarginalizedSobolSampler(
+        fixed_feature_idx=fixed_feature_idx,
+        fixed_value=fixed_value,
+        categorical_mappings=categorical_mappings,
+        scaler=scaler,
+        feature_names=X.columns,
+        scramble=True
+    )
+    
+    # Create threshold function
+    threshold_function = create_threshold_function(model, cost_threshold)
+    
+    # Monte Carlo
+    mc_results = run_sampling_experiment(
+        distribution=conditional_gmm,
+        target_function=threshold_function,
+        sampler=mc_sampler,
+        n_samples=n_samples,
+        n_dimensions=conditional_gmm.n_dimensions
+    )
+    
+    # Quasi-Monte Carlo
+    qmc_results = run_sampling_experiment(
+        distribution=conditional_gmm,
+        target_function=threshold_function,
+        sampler=qmc_sampler,
+        n_samples=n_samples,
+        n_dimensions=conditional_gmm.n_dimensions
+    )
+    
+    # # MH-KDE Importance Sampling
+    # is_results = run_sampling_experiment(
+    #     distribution=None,  # Not needed as we use kde_samples directly
+    #     target_function=mh_kde_estimator,
+    #     sampler=lambda n: kde_samples,  # Use pre-generated samples
+    #     n_samples=n_samples,
+    #     n_dimensions=conditional_gmm.n_dimensions
+    # )
+    
+    # Print results
+    print(f"\nProbability of medical costs > ${cost_threshold:,} given age = 23:")
+    print(f"Monte Carlo estimate: {mc_results['expectation']:.4f}")
+    print(f"Quasi-Monte Carlo estimate: {qmc_results['expectation']:.4f}")
+    # print(f"MH-KDE-IS estimate: {is_results['expectation']:.4f}")
+    
+    # Plot convergence
+    plt.figure(figsize=(10, 6))
+    
+    # Plot MC convergence
+    mc_data = mc_results['convergence_data']
+    mc_stderr = np.sqrt(mc_data.running_variances / mc_data.sample_indices)
+    
+    plt.fill_between(
+        mc_data.sample_indices,
+        mc_data.running_means - mc_stderr,
+        mc_data.running_means + mc_stderr,
+        alpha=0.2,
+        color='blue',
+        label='MC Confidence'
+    )
+    plt.plot(mc_data.sample_indices, mc_data.running_means,
+             color='blue', linewidth=2, label='Monte Carlo')
+    
+    # Plot QMC convergence
+    qmc_data = qmc_results['convergence_data']
+    qmc_stderr = np.sqrt(qmc_data.running_variances / qmc_data.sample_indices)
+    
+    plt.fill_between(
+        qmc_data.sample_indices,
+        qmc_data.running_means - qmc_stderr,
+        qmc_data.running_means + qmc_stderr,
+        alpha=0.2,
+        color='orange',
+        label='QMC Confidence'
+    )
+    plt.plot(qmc_data.sample_indices, qmc_data.running_means,
+             color='orange', linewidth=2, label='Quasi-Monte Carlo')
+    
+    # # Add MH-KDE-IS to the convergence plot
+    # is_data = is_results['convergence_data']
+    # is_stderr = np.sqrt(is_data.running_variances / is_data.sample_indices)
+    
+    # plt.fill_between(
+    #     is_data.sample_indices,
+    #     is_data.running_means - is_stderr,
+    #     is_data.running_means + is_stderr,
+    #     alpha=0.2,
+    #     color='green',
+    #     label='MH-KDE-IS Confidence'
+    # )
+    # plt.plot(is_data.sample_indices, is_data.running_means,
+    #          color='green', linewidth=2, label='MH-KDE-IS')
+    
+    plt.xlabel('Number of Samples')
+    plt.ylabel('P(cost > threshold | age = 23)')
+    plt.title('Convergence of Conditional Probability Estimates')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('examples/importance-sampling-exp/medical_cost_conditional_convergence.png')
+    plt.show()

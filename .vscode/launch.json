@@ -8,7 +8,7 @@
             "name": "Python Debugger: Module",
             "type": "debugpy",
             "request": "launch",
-            "module": "examples.quasi-monte-carlo-exp.med_cost_qmc_comparison"
+            "module": "examples.importance-sampling-exp.medical_cost_conditional"
         }
     ]
 }
