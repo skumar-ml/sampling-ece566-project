@@ -1,13 +1,15 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error
-from scipy.stats.qmc import Sobol
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error, r2_score
+from distributions.implementations import GMMDistribution
+from samplers.implementations import SobolSampler, MonteCarloSampler
+from main import run_sampling_experiment
+import matplotlib.pyplot as plt
 
 
-# Load medical cost data
 def load_data(file_path: str) -> pd.DataFrame:
     """
     Loads medical cost data from a CSV file.
@@ -26,164 +28,183 @@ def load_data(file_path: str) -> pd.DataFrame:
         exit(1)
 
 
-# Quasi-Monte Carlo sampling experiment
-def run_qmc_experiment(data: np.ndarray, n_samples: int):
+def create_features(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Runs a Quasi-Monte Carlo (QMC) experiment to estimate the mean and variance.
-    Args:
-        data (np.ndarray): Array of values (e.g., costs or predictions).
-        n_samples (int): Number of Quasi-Monte Carlo samples.
-    Returns:
-        dict: Contains results of the experiment.
+    Performs feature engineering on the medical cost dataset.
     """
-    n_data = len(data)
-
-    # Create Sobol sequence
-    sampler = Sobol(d=1, scramble=True)  # 1-dimensional Sobol sequence
-    qmc_points = sampler.random(n=n_samples) * n_data  # Scale to data indices
-    sample_indices = np.floor(qmc_points).astype(int).flatten()
-    sample_indices = np.clip(sample_indices, 0, n_data - 1)  # Ensure valid indices
-
-    samples = data[sample_indices]
-
-    # Compute running sums, means, and variances
-    running_sums = np.cumsum(samples)
-    running_sums_sq = np.cumsum(samples ** 2)
-    running_means = running_sums / np.arange(1, n_samples + 1)
-    running_variances = running_sums_sq / np.arange(1, n_samples + 1) - running_means ** 2
-
-    return {
-        "expectation": running_means[-1],
-        "variance": running_variances[-1],
-        "convergence_data": {
-            "running_means": running_means,
-            "running_variances": running_variances,
-            "sample_indices": np.arange(1, n_samples + 1)
-        }
-    }
-
-
-# Plot convergence
-def plot_convergence(results: dict, true_mean: float, file_name: str = None):
-    """
-    Plots the convergence of the QMC estimate.
-    Args:
-        results (dict): Results dictionary containing running means and variances.
-        true_mean (float): True mean of the values.
-        file_name (str): File name to save the plot (optional).
-    """
-    convergence_data = results['convergence_data']
-    running_means = convergence_data['running_means']
-    sample_indices = convergence_data['sample_indices']
-    running_variances = convergence_data['running_variances']
-
-    # Calculate standard errors
-    standard_errors = np.sqrt(running_variances / sample_indices)
-
-    # Confidence bands
-    upper_bound = running_means + standard_errors
-    lower_bound = running_means - standard_errors
-
-    plt.figure(figsize=(10, 6))
-
-    # Plot running means with confidence bands
-    plt.fill_between(
-        sample_indices,
-        lower_bound,
-        upper_bound,
-        alpha=0.2,
-        color='blue',
-        label='Confidence Band'
-    )
-    plt.plot(sample_indices, running_means, color='blue', linewidth=2, label='Running Mean')
-    plt.axhline(y=true_mean, color='red', linestyle='--', label='True Mean')
-
-    plt.xlabel('Number of Samples')
-    plt.ylabel('Estimate of Mean')
-    plt.title('Convergence of Quasi-Monte Carlo Estimate')
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-
-    if file_name:
-        plt.savefig(file_name)
-    plt.show()
-
-
-# Train a linear regression model
-def train_model(data: pd.DataFrame) -> np.ndarray:
-    """
-    Trains a linear regression model to predict medical costs.
-    Args:
-        data (pd.DataFrame): DataFrame containing the dataset.
-    Returns:
-        np.ndarray: Predicted medical costs.
-    """
-    # Prepare features and target
-    features = data.drop(columns=['charges'])
-    target = data['charges']
-
+    # Create a copy to avoid modifying the original
+    df = data.copy()
+    
+    # BMI-related features
+    df['bmi_squared'] = df['bmi'] ** 2
+    df['is_overweight'] = (df['bmi'] > 25).astype(int)
+    df['is_obese'] = (df['bmi'] > 30).astype(int)
+    
+    # Age-related features
+    df['age_squared'] = df['age'] ** 2
+    df['is_senior'] = (df['age'] >= 50).astype(int)
+    
+    # Interaction terms
+    df['smoker_bmi'] = df['smoker'].map({'yes': 1, 'no': 0}) * df['bmi']
+    df['smoker_age'] = df['smoker'].map({'yes': 1, 'no': 0}) * df['age']
+    
     # One-hot encoding for categorical variables
-    features = pd.get_dummies(features, drop_first=True)
+    df = pd.get_dummies(df, columns=['sex', 'region'], drop_first=True)
+    
+    # Convert smoker to numeric
+    df['smoker'] = df['smoker'].map({'yes': 1, 'no': 0})
+    
+    return df
 
-    # Train-test split
-    X_train, X_test, y_train, y_test = train_test_split(features, target, test_size=0.2, random_state=42)
 
+def train_model(data: pd.DataFrame) -> tuple:
+    """
+    Trains a gradient boosting model to predict medical costs.
+    Returns the model and the scaler.
+    """
+    # Prepare features
+    df = create_features(data)
+    
+    # Separate features and target
+    X = df.drop(columns=['charges'])
+    y = df['charges']
+    
+    # Split the data
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+    
+    # Scale the features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
+    
     # Train the model
-    model = LinearRegression()
-    model.fit(X_train, y_train)
+    model = GradientBoostingRegressor(
+        n_estimators=200,
+        max_depth=5,
+        min_samples_split=5,
+        learning_rate=0.1,
+        random_state=42
+    )
+    
+    # Fit the model
+    model.fit(X_train_scaled, y_train)
+    
+    # Make predictions
+    train_preds = model.predict(X_train_scaled)
+    test_preds = model.predict(X_test_scaled)
+    
+    # Calculate metrics
+    train_r2 = r2_score(y_train, train_preds)
+    test_r2 = r2_score(y_test, test_preds)
+    test_mae = mean_absolute_error(y_test, test_preds)
+    
+    print("\nModel Performance:")
+    print(f"Train R² Score: {train_r2:.4f}")
+    print(f"Test R² Score: {test_r2:.4f}")
+    print(f"Test MAE: ${test_mae:,.2f}")
+    
+    return model, scaler, X.columns
 
-    # Evaluate the model
-    predictions = model.predict(X_test)
-    mse = mean_squared_error(y_test, predictions)
-    print(f"Model Mean Squared Error: {mse:.6f}")
 
-    return model.predict(features)
+def run_comparison(distribution: GMMDistribution, model: GradientBoostingRegressor, n_samples: int):
+    """Run comparison between MC and QMC sampling."""
+    
+    # Run MC experiment
+    mc_sampler = MonteCarloSampler()
+    mc_results = run_sampling_experiment(
+        distribution=distribution,
+        target_function=model.predict,
+        sampler=mc_sampler,
+        n_samples=n_samples,
+        n_dimensions=distribution.n_dimensions
+    )
+    
+    # Run QMC experiment
+    qmc_sampler = SobolSampler(scramble=True)
+    qmc_results = run_sampling_experiment(
+        distribution=distribution,
+        target_function=model.predict,
+        sampler=qmc_sampler,
+        n_samples=n_samples,
+        n_dimensions=distribution.n_dimensions
+    )
+    
+    return mc_results, qmc_results
 
 
 if __name__ == "__main__":
-    # Load data
+    # Load and prepare data
     file_path = "https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv"
     medical_cost_data = load_data(file_path)
-
-    # Parameters
-    n_samples = 512
-
-    # Estimate true mean of medical costs
+    
+    # Train model and get scaler
+    model, scaler, feature_names = train_model(medical_cost_data)
+    
+    # Create and scale engineered features for GMM fitting
+    df_engineered = create_features(medical_cost_data)
+    X_scaled = scaler.transform(df_engineered[feature_names])
+    
+    # Setup distribution
+    distribution = GMMDistribution(n_components=3)
+    distribution.fit(X_scaled, feature_names)
+    
+    # Run experiments
+    n_samples = 2**11  # Using power of 2 for Sobol sequences
+    mc_results, qmc_results = run_comparison(distribution, model, n_samples)
+    
+    # Print results
     true_mean = medical_cost_data['charges'].mean()
-
-    # Run Quasi-Monte Carlo experiment for medical cost
-    cost_results = run_qmc_experiment(medical_cost_data['charges'].values, n_samples)
-
-    # Print results for medical cost
-    print("=== Medical Cost Estimation ===")
+    print("\nMedical Cost Estimation Results:")
     print(f"Number of samples: {n_samples}")
-    print(f"Estimated expectation: {cost_results['expectation']:.6f}")
-    print(f"True expectation: {true_mean:.6f}")
-    print(f"Estimated variance: {cost_results['variance']:.6f}")
-
-    # Plot convergence for medical cost
-    plot_convergence(cost_results, true_mean, file_name='qmc_medical_cost_convergence.png')
-
-    # Train a model to predict medical costs
-    model_predictions = train_model(medical_cost_data)
-
-    # Estimate true mean of model predictions
-    true_model_mean = model_predictions.mean()
-
-    # Run Quasi-Monte Carlo experiment for model predictions
-    model_results = run_qmc_experiment(model_predictions, n_samples)
-
-    # Print results for model predictions
-    print("\n=== Model Prediction Estimation ===")
-    print(f"Estimated model expectation: {model_results['expectation']:.6f}")
-    print(f"True model expectation: {true_model_mean:.6f}")
-    print(f"Estimated model variance: {model_results['variance']:.6f}")
-
-    # Plot convergence for model predictions
-    plot_convergence(
-        model_results,
-        true_model_mean,
-        file_name='qmc_model_prediction_convergence.png'
+    print(f"Training Data Mean: ${true_mean:,.2f}")
+    print(f"MC  estimate: ${mc_results['expectation']:,.2f}")
+    print(f"QMC estimate: ${qmc_results['expectation']:,.2f}")
+    print(f"MC  variance: ${mc_results['variance']:,.2f}")
+    print(f"QMC variance: ${qmc_results['variance']:,.2f}")
+    
+    # Plot convergence
+    plt.figure(figsize=(10, 6))
+    
+    # Plot MC convergence
+    mc_data = mc_results['convergence_data']
+    mc_stderr = np.sqrt(mc_data.running_variances / mc_data.sample_indices)
+    
+    plt.fill_between(
+        mc_data.sample_indices,
+        mc_data.running_means - mc_stderr,
+        mc_data.running_means + mc_stderr,
+        alpha=0.2,
+        color='blue',
+        label='MC Confidence'
     )
+    plt.plot(mc_data.sample_indices, mc_data.running_means,
+             color='blue', linewidth=2, label='Monte Carlo')
+    
+    # Plot QMC convergence
+    qmc_data = qmc_results['convergence_data']
+    qmc_stderr = np.sqrt(qmc_data.running_variances / qmc_data.sample_indices)
+    
+    plt.fill_between(
+        qmc_data.sample_indices,
+        qmc_data.running_means - qmc_stderr,
+        qmc_data.running_means + qmc_stderr,
+        alpha=0.2,
+        color='orange',
+        label='QMC Confidence'
+    )
+    plt.plot(qmc_data.sample_indices, qmc_data.running_means,
+             color='orange', linewidth=2, label='Quasi-Monte Carlo')
+    
+    plt.axhline(y=true_mean, color='r', linestyle='--', label='Training Data Mean')
+    plt.xlabel('Number of Samples')
+    plt.ylabel('Estimated Mean Cost ($)')
+    plt.title('Convergence of Cost Estimates')
+    plt.grid(True)
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.savefig('examples/quasi-monte-carlo-exp/med_cost_images/convergence.png')
+    plt.show()
 

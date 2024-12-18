@@ -1,6 +1,9 @@
 import numpy as np
-from scipy.stats import norm, multivariate_normal
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import StandardScaler
 from .base import Distribution
+import pandas as pd
+from scipy.stats import norm, multivariate_normal
 
 class Gaussian1D(Distribution):
     def __init__(self, mean: float, std: float):
@@ -111,3 +114,122 @@ class UniformCube(Distribution):
         if u.shape[1] != self.n_dimensions:
             raise ValueError(f"Input shape {u.shape} does not match distribution dimensions {self.n_dimensions}")
         return u
+
+class GMMDistribution(Distribution):
+    """Gaussian Mixture Model distribution for medical cost data."""
+    
+    def __init__(self, n_components: int = 3):
+        """
+        Args:
+            n_components: Number of Gaussian components in the mixture
+        """
+        self.n_components = n_components
+        self.gmm = None
+        self.feature_names = None
+        self.n_dimensions = None
+    
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Generate samples from the distribution."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before sampling")
+        
+        # Sample directly in scaled space
+        X_scaled, _ = self.gmm.sample(n_samples)
+        return X_scaled
+    
+    def pdf(self, x: np.ndarray) -> np.ndarray:
+        """Compute probability density."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before computing pdf")
+        return np.exp(self.log_pdf(x))
+    
+    def log_pdf(self, x: np.ndarray) -> np.ndarray:
+        """Compute log probability density."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before computing log_pdf")
+        return self.gmm.score_samples(x)
+    
+    def fit(self, X_scaled: np.ndarray, feature_names: pd.Index):
+        """
+        Fit the GMM to scaled data.
+        
+        Args:
+            X_scaled: Array of scaled features
+            feature_names: Names of features in correct order
+        """
+        self.feature_names = feature_names
+        self.n_dimensions = len(feature_names)
+        
+        # Fit GMM directly to scaled data
+        self.gmm = GaussianMixture(
+            n_components=self.n_components,
+            covariance_type='full',
+            random_state=42
+        )
+        self.gmm.fit(X_scaled)
+    
+    @property
+    def weights(self) -> np.ndarray:
+        """Get mixture weights."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before accessing weights")
+        return self.gmm.weights_
+    
+    @property
+    def means(self) -> np.ndarray:
+        """Get component means."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before accessing means")
+        return self.gmm.means_
+    
+    @property
+    def covariances(self) -> np.ndarray:
+        """Get component covariances."""
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before accessing covariances")
+        return self.gmm.covariances_
+    
+    def inverse_cdf(self, u: np.ndarray) -> np.ndarray:
+        """
+        Transform uniform samples to GMM samples in scaled space.
+        
+        Args:
+            u: Uniform samples of shape (n_samples, n_dimensions + 1)
+                Last dimension is used for component selection
+            
+        Returns:
+            Array of samples in scaled space
+        """
+        if self.gmm is None:
+            raise RuntimeError("Must call fit() before inverse transform")
+            
+        n_samples = u.shape[0]
+        
+        # Separate uniform samples
+        uniform_samples = u[:, :-1]  # For Gaussian sampling
+        component_selector = u[:, -1]  # For selecting mixture component
+        
+        # Initialize output array
+        samples_scaled = np.zeros((n_samples, self.n_dimensions))
+        
+        # Cumulative weights for component selection
+        cumulative_weights = np.cumsum(self.weights)
+        
+        # Generate samples
+        for i in range(n_samples):
+            # Select component
+            component_idx = np.searchsorted(cumulative_weights, component_selector[i])
+            component_idx = min(component_idx, len(self.weights) - 1)  # Handle edge case
+            
+            # Get component parameters
+            mu = self.means[component_idx]
+            cov = self.covariances[component_idx]
+            
+            # Transform uniform to standard normal
+            std_normal = norm.ppf(uniform_samples[i])
+            
+            # Transform to component distribution
+            L = np.linalg.cholesky(cov)
+            samples_scaled[i] = mu + np.dot(L, std_normal)
+        
+        return samples_scaled

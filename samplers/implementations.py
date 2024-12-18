@@ -2,6 +2,7 @@ import numpy as np
 from scipy.stats import qmc
 from .base import BaseSampler
 from distributions.base import Distribution
+from distributions.implementations import GMMDistribution
 
 class TransformingSampler(BaseSampler):
     """Base class for samplers that use inverse transform sampling."""
@@ -10,15 +11,14 @@ class TransformingSampler(BaseSampler):
         """Transform uniform samples to target distribution."""
         return self.distribution.inverse_cdf(uniform_samples)
 
-class UnitCubeSampler(TransformingSampler):
-    """Uniform random sampling with inverse transform."""
+class MonteCarloSampler(BaseSampler):
+    """Basic Monte Carlo sampler that directly samples from the distribution."""
     
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        uniform_samples = np.random.uniform(
-            low=0, high=1, 
-            size=(n_samples, self.n_dimensions)
-        )
-        return self.transform_samples(uniform_samples)
+        """Generate samples directly from the distribution."""
+        if self.distribution is None:
+            raise RuntimeError("Must call setup() before generating samples")
+        return self.distribution.sample(n_samples)
 
 class SobolSampler(TransformingSampler):
     """Quasi-Monte Carlo sampler using Sobol sequences with inverse transform."""
@@ -29,17 +29,34 @@ class SobolSampler(TransformingSampler):
         self.sampler = None
     
     def setup(self, distribution: Distribution, n_dimensions: int):
+        """
+        Setup the sampler. For GMM, adds an extra dimension for component selection.
+        """
         super().setup(distribution, n_dimensions)
+        
+        # Add extra dimension if distribution is GMM
+        actual_dims = n_dimensions
+        if isinstance(distribution, GMMDistribution):
+            actual_dims += 1  # Extra dimension for component selection
+            
         self.sampler = qmc.Sobol(
-            d=n_dimensions, 
+            d=actual_dims, 
             scramble=self.scramble
         )
     
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        uniform_samples = self.sampler.random_base2(
-            m=int(np.ceil(np.log2(n_samples)))
-        )
-        return self.transform_samples(uniform_samples)
+        """Generate Sobol sequence samples."""
+        if self.sampler is None:
+            raise RuntimeError("Must call setup() before generating samples")
+            
+        # Generate samples using power of 2
+        m = int(np.ceil(np.log2(n_samples)))
+        u = self.sampler.random_base2(m=m)
+        
+        # Take only the requested number of samples
+        u = u[:n_samples]
+        
+        return self.transform_samples(u)
 
 class TruncatedMHSampler(BaseSampler):
     """
