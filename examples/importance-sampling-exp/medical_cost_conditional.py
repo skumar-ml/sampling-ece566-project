@@ -117,50 +117,61 @@ def get_truncation_threshold(model, conditional_gmm: GMMDistribution, cost_thres
     thresholds = np.min(high_cost_samples, axis=0) - 0.1
     return thresholds
 
-def mh_kde_importance_sampling(conditional_gmm: GMMDistribution, thresholds: np.ndarray,
-                             n_samples: int, n_mh_samples: int = 10000):
-    """Performs MH-KDE-IS sampling."""
-    # Setup and run MH sampler
-    mh_sampler = TruncatedMHSampler(thresholds=thresholds, step_size=0.01, burn_in=2000)
-    mh_sampler.setup(conditional_gmm, len(thresholds))
+def mh_gmm_importance_sampling(conditional_gmm: GMMDistribution, model, cost_threshold: float,
+                             fixed_feature_idx: int, fixed_value: float,
+                             categorical_mappings: List[dict], scaler: StandardScaler,
+                             feature_names: List[str], n_mh_samples: int = 10000):
+    """Performs MH-KDE-IS sampling targeting the optimal distribution."""
+    def optimal_log_density(x):
+        # Add fixed feature back
+        x_with_fixed = np.insert(x.reshape(1, -1), fixed_feature_idx, fixed_value, axis=1)
+        
+        # Create all categorical permutations in scaled space
+        x_full = marginalize_samples(
+            x_with_fixed, 
+            categorical_mappings,
+            scaler,
+            feature_names
+        )
+        
+        # Compute costs for all permutations
+        costs = model.predict(x_full)
+        
+        # If no permutation exceeds threshold, return -inf
+        if not np.any(costs > cost_threshold):
+            return -np.inf
+        
+        # Return log of target density times average indicator
+        log_target = conditional_gmm.log_pdf(x)
+        indicator_mean = np.mean(costs > cost_threshold)
+        
+        return log_target + np.log(indicator_mean)
+    
+    # Setup and run MH sampler with optimal target distribution
+    mh_sampler = TruncatedMHSampler(
+        step_size=0.01, 
+        burn_in=2000,
+        log_target_density=optimal_log_density
+    )
+    mh_sampler.setup(conditional_gmm, conditional_gmm.n_dimensions)
     mh_samples = mh_sampler.generate_samples(n_mh_samples)
     
-    # Fit KDE to MH samples
-    kde = gaussian_kde(mh_samples.T)
-    kde_samples = kde.resample(n_samples).T
+    # Fit gmm to MH samples
+    fit_dist = GaussianMixture(n_components=10).fit(mh_samples)
     
-    return kde_samples, kde
+    return fit_dist
 
-def mh_kde_is_estimator(model, threshold: float, 
-                       target_dist: GMMDistribution, kde: gaussian_kde):
+def mh_gmm_is_estimator(model, cost_threshold: float, 
+                       target_dist: GMMDistribution, proposal_dist: GaussianMixture):
     """Returns an importance sampling estimator using KDE proposal."""
     def estimator(x: np.ndarray) -> np.ndarray:
-        # Get the original samples (before categorical marginalization)
-        n_combinations = len(categorical_mappings)
-        n_samples = len(x) // n_combinations
-        original_samples = x.reshape(n_samples, n_combinations, -1)[:, 0, :]
-        
-        # Remove the fixed feature to match the conditional GMM dimensionality
-        samples_no_fixed = np.delete(original_samples, fixed_feature_idx, axis=1)
-        
-        # Compute importance weights with numerical stability
-        log_target = target_dist.log_pdf(samples_no_fixed)
-        log_proposal = np.log(kde.evaluate(samples_no_fixed.T))
-        log_weights = log_target - log_proposal
-        
-        # Stabilize by subtracting maximum log weight
-        max_log_weight = np.max(log_weights)
-        stable_weights = np.exp(log_weights - max_log_weight)
-        
-        # Compute indicator function for all samples
-        costs = model.predict(x)
-        indicators = (costs > threshold).astype(float)
-        
-        # Reshape indicators and broadcast weights
-        indicators = indicators.reshape(n_samples, n_combinations)
-        mean_indicators = indicators.mean(axis=1)
-        
-        return mean_indicators * stable_weights
+        model_pred = model.predict(x)
+        indicator = (model_pred > cost_threshold).astype(float)
+
+        target_density = target_dist.pdf(x[:, 1:3]) # Ignores age and categorical features
+        proposal_density = np.exp(proposal_dist.score_samples(x[:, 1:3]))
+        weights = indicator * target_density / proposal_density
+        return weights
     return estimator
 
 def marginalize_samples(samples: np.ndarray, categorical_mappings: List[dict], 
@@ -271,20 +282,23 @@ class MarginalizedSobolSampler(MarginalizationMixin, SobolSampler):
         # Process samples through marginalization
         return self.process_samples(base_samples)
 
-class MarginalizedKDESampler(MarginalizationMixin):
-    """KDE sampler with categorical marginalization."""
+class MarginalizedGMMSampler(MarginalizationMixin, MonteCarloSampler):
+    """GMM sampler with categorical marginalization."""
     
-    def __init__(self, kde_samples: np.ndarray, kde: gaussian_kde,
+    def __init__(self, gmm: GaussianMixture,
                  fixed_feature_idx: int, fixed_value: float,
                  categorical_mappings: List[dict], scaler: StandardScaler,
                  feature_names: List[str]):
-        super().__init__(fixed_feature_idx, fixed_value,
-                        categorical_mappings, scaler, feature_names)
-        self.kde_samples = kde_samples
-        self.kde = kde
+        MarginalizationMixin.__init__(self, fixed_feature_idx, fixed_value,
+                                    categorical_mappings, scaler, feature_names)
+        MonteCarloSampler.__init__(self)
+        self.gmm = gmm
     
     def generate_samples(self, n_samples: int) -> np.ndarray:
-        return self.process_samples(self.kde_samples)
+        # Sample from GMM
+        gmm_samples = self.gmm.sample(n_samples)[0]
+        # Process samples through marginalization
+        return self.process_samples(gmm_samples)
 
 def create_threshold_function(model, threshold: float):
     """Creates a function that returns 1 if predicted cost > threshold, 0 otherwise."""
@@ -335,7 +349,7 @@ if __name__ == "__main__":
     continuous_feature_indices = [list(X.columns).index(feat) for feat in CONTINUOUS_FEATURES]
     
     # Fit GMM only to continuous features using the indices
-    gmm = GMMDistribution(n_components=3)
+    gmm = GMMDistribution(n_components=10)
     gmm.fit(X_train_scaled[:, continuous_feature_indices])
     
     # Set condition and threshold
@@ -393,24 +407,22 @@ if __name__ == "__main__":
         n_dimensions=conditional_gmm.n_dimensions
     )
     
-    # Get truncation thresholds for MH sampler
-    thresholds = get_truncation_threshold(
-        model, conditional_gmm, cost_threshold,
-        fixed_feature_idx, fixed_value
-    )
-    
-    # Generate KDE proposal distribution using MH samples
-    kde_samples, kde = mh_kde_importance_sampling(
+    # Get KDE proposal distribution using MH samples targeting optimal distribution
+    gmm = mh_gmm_importance_sampling(
         conditional_gmm=conditional_gmm,
-        thresholds=thresholds,
-        n_samples=n_samples,
-        n_mh_samples=n_samples
+        model=model,
+        cost_threshold=cost_threshold,
+        n_mh_samples=n_samples,
+        fixed_feature_idx=fixed_feature_idx,
+        fixed_value=fixed_value,
+        categorical_mappings=categorical_mappings,
+        scaler=scaler,
+        feature_names=X.columns
     )
     
     # Create marginalized KDE sampler
-    kde_sampler = MarginalizedKDESampler(
-        kde_samples=kde_samples,
-        kde=kde,
+    gmm_sampler = MarginalizedGMMSampler(
+        gmm=gmm,
         fixed_feature_idx=fixed_feature_idx,
         fixed_value=fixed_value,
         categorical_mappings=categorical_mappings,
@@ -419,13 +431,13 @@ if __name__ == "__main__":
     )
     
     # Create IS estimator
-    is_estimator = mh_kde_is_estimator(model, cost_threshold, conditional_gmm, kde)
+    is_estimator = mh_gmm_is_estimator(model, cost_threshold, conditional_gmm, gmm)
     
     # MH-KDE Importance Sampling
     is_results = run_sampling_experiment(
         distribution=None,  # Not needed as we use kde_samples directly
         target_function=is_estimator,
-        sampler=kde_sampler,
+        sampler=gmm_sampler,
         n_samples=n_samples,
         n_dimensions=conditional_gmm.n_dimensions
     )
@@ -434,7 +446,7 @@ if __name__ == "__main__":
     print(f"\nProbability of medical costs > ${cost_threshold:,} given age = 23:")
     print(f"Monte Carlo estimate: {mc_results['expectation']:.4f}")
     print(f"Quasi-Monte Carlo estimate: {qmc_results['expectation']:.4f}")
-    print(f"MH-KDE-IS estimate: {is_results['expectation']:.4f}")
+    print(f"MH-GMM-IS estimate: {is_results['expectation']:.4f}")
     
     # Plot convergence
     plt.figure(figsize=(10, 6))
@@ -479,10 +491,10 @@ if __name__ == "__main__":
         is_data.running_means + is_stderr,
         alpha=0.2,
         color='green',
-        label='MH-KDE-IS Confidence'
+        label='MH-GMM-IS Confidence'
     )
     plt.plot(is_data.sample_indices, is_data.running_means,
-             color='green', linewidth=2, label='MH-KDE-IS')
+             color='green', linewidth=2, label='MH-GMM-IS')
     
     plt.xlabel('Number of Samples')
     plt.ylabel('P(cost > threshold | age = 23)')
