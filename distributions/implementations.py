@@ -64,25 +64,10 @@ class GaussianMV(Distribution):
         Args:
             u: Uniform samples of shape (n_samples, n_dimensions)
         """
-        # Convert uniform to standard normal using Box-Muller
-        n_samples = u.shape[0]
-        z = np.zeros_like(u)
+        # Convert uniform to standard normal using inverse normal CDF
+        z = norm.ppf(u)
         
-        # Handle pairs of dimensions
-        for i in range(0, u.shape[1] - 1, 2):
-            r = np.sqrt(-2 * np.log(u[:, i]))
-            theta = 2 * np.pi * u[:, i+1]
-            z[:, i] = r * np.cos(theta)
-            z[:, i+1] = r * np.sin(theta)
-        
-        # Handle last dimension if odd
-        if u.shape[1] % 2:
-            last = u.shape[1] - 1
-            r = np.sqrt(-2 * np.log(u[:, last]))
-            theta = 2 * np.pi * u[:, 0]  # Reuse first column
-            z[:, last] = r * np.cos(theta)
-        
-        # Transform to desired mean and covariance
+        # Transform to desired mean and covariance using Cholesky decomposition
         return self.mean + z @ self.L.T
 
 class UniformCube(Distribution):

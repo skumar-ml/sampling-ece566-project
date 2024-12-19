@@ -100,65 +100,93 @@ def multivariate_probability_estimator(thresholds: np.ndarray):
         return np.all(x > thresholds_expanded, axis=1).astype(float)
     return estimator
 
+def run_single_dimension_experiment(dim: int, n_samples: int):
+    """Run experiment for a single dimension and return results."""
+    # Setup the problem
+    mean = np.zeros(dim)
+    cov = generate_random_cov(dim)
+    cond_mean, cond_cov = get_conditional_distribution(0.0, mean, cov)
+    thresholds = get_thresholds(cond_mean, cond_cov)
+    true_prob = compute_ground_truth(cond_mean, cond_cov, thresholds)
+    
+    target_dist = GaussianMV(mean=cond_mean, cov=cond_cov)
+    
+    # Setup estimators and samplers
+    mc_estimator = multivariate_probability_estimator(thresholds)
+    qmc_estimator = multivariate_probability_estimator(thresholds)
+    
+    mc_sampler = MonteCarloSampler()
+    qmc_sampler = SobolSampler(scramble=True)
+    
+    # Run standard MC and QMC experiments
+    mc_results = run_sampling_experiment(
+        distribution=target_dist,
+        target_function=mc_estimator,
+        sampler=mc_sampler,
+        n_samples=n_samples,
+        n_dimensions=dim-1
+    )
+    
+    qmc_results = run_sampling_experiment(
+        distribution=target_dist,
+        target_function=qmc_estimator,
+        sampler=qmc_sampler,
+        n_samples=n_samples,
+        n_dimensions=dim-1
+    )
+    
+    # Run MH-KDE-IS experiment
+    kde_samples, kde = mh_kde_importance_sampling(
+        target_dist=target_dist,
+        thresholds=thresholds,
+        n_samples=n_samples,
+        n_mh_samples=n_samples
+    )
+    mh_kde_is_est = mh_kde_is_estimator(target_dist, kde, thresholds)
+    
+    # Calculate running means for MH-KDE-IS
+    weights = mh_kde_is_est(kde_samples)
+    running_means = np.cumsum(weights) / np.arange(1, len(weights) + 1)
+    
+    return {
+        'mc_results': mc_results,
+        'qmc_results': qmc_results,
+        'mh_kde_is_means': running_means,
+        'true_prob': true_prob
+    }
+
 def run_dimension_experiment(dims: List[int], n_samples: int):
     """Run experiment for each dimension and collect results."""
     results = []
-    x1_fixed = 0.0
-    target_prob = 0.8
     
     for dim in dims:
         print(f"\nRunning experiment for dimension {dim}")
         
-        mean = np.zeros(dim)
-        cov = generate_random_cov(dim)
-        cond_mean, cond_cov = get_conditional_distribution(x1_fixed, mean, cov)
-        thresholds = get_thresholds(cond_mean, cond_cov, target_prob)
-        true_prob = compute_ground_truth(cond_mean, cond_cov, thresholds, n_mc=10**7)
+        # Run experiment for this dimension
+        dim_exp_results = run_single_dimension_experiment(dim, n_samples)
         
-        target_dist = GaussianMV(mean=cond_mean, cov=cond_cov)
+        # Calculate relative errors for each method
+        true_prob = dim_exp_results['true_prob']
+        dim_results = {
+            'dimension': dim,
+            'true_prob': true_prob
+        }
         
-        mc_estimator = multivariate_probability_estimator(thresholds)
-        qmc_estimator = multivariate_probability_estimator(thresholds)
+        # MC relative error
+        mc_estimate = dim_exp_results['mc_results']['convergence_data'].running_means[-1]
+        dim_results['MC'] = abs(mc_estimate - true_prob) / true_prob * 100
+        dim_results['MC_prob'] = mc_estimate
         
-        kde_samples, kde = mh_kde_importance_sampling(
-            target_dist=target_dist,
-            thresholds=thresholds,
-            n_samples=n_samples,
-            n_mh_samples=n_samples
-        )
-        mh_kde_is_est = mh_kde_is_estimator(target_dist, kde, thresholds)
+        # QMC relative error
+        qmc_estimate = dim_exp_results['qmc_results']['convergence_data'].running_means[-1]
+        dim_results['QMC'] = abs(qmc_estimate - true_prob) / true_prob * 100
+        dim_results['QMC_prob'] = qmc_estimate
         
-        mc_sampler = MonteCarloSampler()
-        qmc_sampler = SobolSampler(scramble=True)
+        # MH-KDE-IS relative error
+        mh_kde_estimate = dim_exp_results['mh_kde_is_means'][-1]
+        dim_results['MH-KDE-IS'] = abs(mh_kde_estimate - true_prob) / true_prob * 100
+        dim_results['MH-KDE-IS_prob'] = mh_kde_estimate
         
-        methods = [
-            (target_dist, mc_estimator, mc_sampler, "MC"),
-            (target_dist, qmc_estimator, qmc_sampler, "QMC"),
-            (None, mh_kde_is_est, lambda n: kde_samples, "MH-KDE-IS")
-        ]
-        
-        dim_results = {}
-        for dist, estimator, sampler, name in methods:
-            if name == "MH-KDE-IS":
-                weights = estimator(kde_samples)
-                estimate = np.mean(weights)
-                relative_error = abs(estimate - true_prob) / true_prob
-            else:
-                exp_results = run_sampling_experiment(
-                    distribution=dist,
-                    target_function=estimator,
-                    sampler=sampler,
-                    n_samples=n_samples,
-                    n_dimensions=dim-1
-                )
-                estimate = exp_results['convergence_data'].running_means[-1]
-                relative_error = abs(estimate - true_prob) / true_prob
-            
-            dim_results[name] = relative_error * 100
-            dim_results[f"{name}_prob"] = estimate
-        
-        dim_results['dimension'] = dim
-        dim_results['true_prob'] = true_prob
         results.append(dim_results)
     
     return results
@@ -195,22 +223,55 @@ def plot_dimension_results(results: List[dict]):
     plt.savefig('examples/importance-sampling-exp/dimension_comparison.png')
     plt.show()
 
+def plot_convergence_for_dimensions(dims: List[int], n_samples: int):
+    """Plot convergence for selected dimensions in a subplot."""
+    # Select first, middle and last dimension
+    selected_dims = [dims[0], dims[len(dims)//2], dims[-1]]
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig.suptitle('Convergence Analysis by Dimension', fontsize=14)
+    
+    colors = {
+        'MC': 'blue',
+        'QMC': 'orange',
+        'MH-KDE-IS': 'green'
+    }
+    
+    for idx, dim in enumerate(selected_dims):
+        print(f"\nGenerating convergence plot for dimension {dim}")
+        
+        results = run_single_dimension_experiment(dim, n_samples)
+        
+        # Plot results
+        ax = axes[idx]
+        sample_points = np.arange(1, n_samples + 1)
+        
+        ax.plot(sample_points, results['mc_results']['convergence_data'].running_means, 
+                label='MC', color=colors['MC'], alpha=0.8)
+        ax.plot(sample_points, results['qmc_results']['convergence_data'].running_means, 
+                label='QMC', color=colors['QMC'], alpha=0.8)
+        ax.plot(sample_points, results['mh_kde_is_means'], 
+                label='MH-KDE-IS', color=colors['MH-KDE-IS'], alpha=0.8)
+        ax.axhline(y=results['true_prob'], color='r', linestyle='--', label='True Value')
+        
+        ax.set_title(f'Dimension {dim}')
+        ax.set_xlabel('Number of Samples')
+        ax.set_ylabel('Probability Estimate')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.set_xscale('log')
+    
+    plt.tight_layout()
+    plt.savefig('examples/importance-sampling-exp/convergence_comparison_multiDim.png')
+    plt.show()
+
 if __name__ == "__main__":
     dimensions = list(range(3, 15))
     n_samples = 2**14
     
+    # Run main dimension experiment
     results = run_dimension_experiment(dimensions, n_samples)
-    
-    print("\nResults by dimension:")
-    print("-" * 70)
-    for r in results:
-        dim = r['dimension']
-        print(f"\nDimension {dim}:")
-        print(f"True probability: {r['true_prob']:.6e}")
-        print("Method Results:")
-        print("  Method  Probability    Rel. Error")
-        print("  " + "-" * 30)
-        for method in ['MC', 'QMC', 'MH-KDE-IS']:
-            print(f"  {method:<7} {r[f'{method}_prob']:.6e}  {r[method]:.6e}")
-    
     plot_dimension_results(results)
+    
+    # Generate convergence plots
+    plot_convergence_for_dimensions(dimensions, n_samples)
